@@ -114,6 +114,66 @@ describe("evaluatePixelEvent", () => {
     }
   });
 
+  test("rejects compound human-name keys while preserving non-person entity names", () => {
+    const personalContexts = [
+      "display", "customer", "contact", "user", "profile",
+      "member", "person", "people", "recipient", "author", "visitor",
+    ];
+    const blockedCases: Array<[string, Record<string, unknown>]> = personalContexts.flatMap((context) => [
+      [`camel ${context} name`, { [`${context}Name`]: "Ada Lovelace" }],
+      [`snake plural ${context} names`, { [`${context}_names`]: "Ada Lovelace" }],
+      [`kebab ${context} name`, { [`${context}-name`]: "Ada Lovelace" }],
+      [`compact plural ${context} names`, { [`${context}names`]: "Ada Lovelace" }],
+      [`uppercase compact ${context} names`, { [`${context.toUpperCase()}NAMES`]: "Ada Lovelace" }],
+    ] as Array<[string, Record<string, unknown>]>);
+    blockedCases.push(
+      ["human-name token before customer context", { nameOfCustomer: "Ada Lovelace" }],
+      ["human-name token with trailing label", { customerNameLabel: "Ada Lovelace" }],
+      ["profile display name ancestry", { profile: { displayName: "Ada Lovelace" } }],
+      ["profile preferred name ancestry", { profile: { preferredName: "Ada Lovelace" } }],
+      ["plural profile legal names ancestry", { profiles: [{ legal_names: "Ada Lovelace" }] }],
+      ["customer ancestry through an array", { customers: [{ preferredName: "Ada Lovelace" }] }],
+      ["nested recipient profile ancestry", {
+        metadata: { recipientProfile: { preferred_names: ["Ada Lovelace"] } },
+      }],
+    );
+
+    for (const [label, properties] of blockedCases) {
+      expect(() => evaluatePixelEvent(request({
+        event: { name: "lead", properties: properties as EvaluationRequest["event"]["properties"] },
+      })), label).toThrow();
+    }
+
+    const entityContexts = [
+      "event", "product", "company", "organization", "campaign", "category", "file",
+    ];
+    const safeCases: Array<[string, Record<string, unknown>]> = entityContexts.flatMap((context) => [
+      [`camel ${context} name`, { [`${context}Name`]: "Research Journal" }],
+      [`snake plural ${context} names`, { [`${context}_names`]: ["Research Journal"] }],
+      [`kebab ${context} name`, { [`${context}-name`]: "Research Journal" }],
+      [`compact plural ${context} names`, { [`${context}names`]: ["Research Journal"] }],
+      [`uppercase compact ${context} names`, { [`${context.toUpperCase()}NAMES`]: "Research Journal" }],
+    ] as Array<[string, Record<string, unknown>]>);
+    safeCases.push(
+      ["safe entity name within profile ancestry", {
+        profile: { productName: "Nutrition Journal Plus", companyName: "Hasna Inc." },
+      }],
+      ["safe entity names in nested arrays", {
+        metadata: [{ campaign_names: ["organic-search"], file_names: ["index.html"] }],
+      }],
+      ["personal-context identifiers and counts", {
+        customerId: "customer_123", contactCount: 4, memberIndex: 7, visitorTotal: 10,
+      }],
+      ["ordinary contact text", { contactNote: "reach the support team" }],
+    );
+
+    for (const [label, properties] of safeCases) {
+      expect(() => evaluatePixelEvent(request({
+        event: { name: "page_view", properties: properties as EvaluationRequest["event"]["properties"] },
+      })), label).not.toThrow();
+    }
+  });
+
   test("accepts safe identifiers, dotted versions, and email-like non-address text", () => {
     expect(() => evaluatePixelEvent(request({
       event: {

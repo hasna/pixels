@@ -53,6 +53,7 @@ const canonicalPropertyTokens: Readonly<Record<string, string>> = Object.freeze(
   indices: "index",
   indexes: "index",
   lastnames: "lastname",
+  people: "person",
   mobiles: "mobile",
   names: "name",
   numbers: "number",
@@ -91,7 +92,126 @@ function hasSafeNumericIdentifierToken(tokens: string[]): boolean {
   return tokens.some((token) => safeNumericIdentifierTokens.has(token));
 }
 
-function blockedPropertyKey(key: string): boolean {
+const directHumanNameKeys = new Set([
+  "name",
+  "firstname",
+  "lastname",
+  "fullname",
+  "surname",
+  "forename",
+  "givenname",
+  "familyname",
+  "maidenname",
+]);
+
+const personalNameContextTokens = new Set([
+  "display",
+  "customer",
+  "contact",
+  "user",
+  "profile",
+  "member",
+  "person",
+  "recipient",
+  "author",
+  "visitor",
+]);
+
+const personalContextContainerTokens = new Set([
+  ...personalNameContextTokens,
+  "people",
+  "data",
+  "detail",
+  "group",
+  "info",
+  "list",
+  "metadata",
+  "record",
+]);
+const personalContextContainerWords = Object.freeze(
+  [...personalContextContainerTokens].sort((left, right) => right.length - left.length),
+);
+
+const safeNonPersonNameKeys = new Set([
+  "eventname",
+  "productname",
+  "companyname",
+  "organizationname",
+  "campaignname",
+  "categoryname",
+  "filename",
+]);
+
+function singularNameKeyCompact(key: string): string {
+  const compact = canonicalPropertyKeyTokens(key).join("");
+  return compact.endsWith("names") ? compact.slice(0, -1) : compact;
+}
+
+function canonicalPersonalContextToken(token: string): string {
+  if (token === "people") return "person";
+  if (token.endsWith("s") && personalNameContextTokens.has(token.slice(0, -1))) {
+    return token.slice(0, -1);
+  }
+  return token;
+}
+
+function hasPersonalContextToken(tokens: string[]): boolean {
+  return tokens.some((token) => personalNameContextTokens.has(canonicalPersonalContextToken(token)));
+}
+
+function compactHasPersonalContext(value: string): boolean {
+  const memo = new Map<string, boolean>();
+
+  function visit(remaining: string, foundPersonalContext: boolean): boolean {
+    if (remaining.length === 0) return foundPersonalContext;
+    const memoKey = `${remaining}:${foundPersonalContext ? "1" : "0"}`;
+    const cached = memo.get(memoKey);
+    if (cached !== undefined) return cached;
+
+    for (const word of personalContextContainerWords) {
+      const variants = [word, `${word}s`];
+      for (const variant of variants) {
+        if (!remaining.startsWith(variant)) continue;
+        const isPersonal = personalNameContextTokens.has(canonicalPersonalContextToken(word));
+        if (visit(remaining.slice(variant.length), foundPersonalContext || isPersonal)) {
+          memo.set(memoKey, true);
+          return true;
+        }
+      }
+    }
+
+    memo.set(memoKey, false);
+    return false;
+  }
+
+  return visit(value, false);
+}
+
+function pathHasPersonalNameContext(path: Array<string | number>): boolean {
+  return path
+    .filter((item): item is string => typeof item === "string" && item !== "properties")
+    .some((key) => {
+      const terms = canonicalPropertyKeyTokens(key);
+      return hasPersonalContextToken(terms) || compactHasPersonalContext(terms.join(""));
+    });
+}
+
+function blockedHumanNameKey(key: string, path: Array<string | number>): boolean {
+  const terms = canonicalPropertyKeyTokens(key);
+  const compact = singularNameKeyCompact(key);
+  if (safeNonPersonNameKeys.has(compact)) return false;
+  if (directHumanNameKeys.has(compact)) return true;
+  const hasNameSemantic = compact.endsWith("name")
+    || terms.some((term) => directHumanNameKeys.has(term));
+  if (!hasNameSemantic) return false;
+
+  const qualifier = compact.slice(0, -"name".length);
+  if (hasPersonalContextToken(terms)) return true;
+  if (compact.endsWith("name") && compactHasPersonalContext(qualifier)) return true;
+  return pathHasPersonalNameContext(path);
+}
+
+function blockedPropertyKey(key: string, path: Array<string | number> = []): boolean {
   const tokens = canonicalPropertyKeyTokens(key);
   const normalized = tokens.join("_");
   const compact = tokens.join("");
@@ -109,8 +229,7 @@ function blockedPropertyKey(key: string): boolean {
     "zip",
   ].includes(token))) return true;
   if (["contactnumber", "mobilenumber", "telephonenumber", "cellphonenumber"].includes(compact)) return true;
-  if (/(?:^|_)(?:first|last|full)_name(?:_|$)/.test(normalized)) return true;
-  if (["name", "firstname", "lastname", "fullname"].includes(compact)) return true;
+  if (blockedHumanNameKey(key, path)) return true;
   if (/(?:^|_)postal_code(?:_|$)/.test(normalized)) return true;
   if (/(?:^|_)user_agent(?:_|$)/.test(normalized)) return true;
   if (normalized === "ip" || /(?:^|_)(?:client|remote|source|user|visitor)_ip(?:_|$)/.test(normalized)) return true;
@@ -240,7 +359,7 @@ function inspectPropertyValue(
   if (value && typeof value === "object") {
     for (const [key, item] of Object.entries(value)) {
       const itemPath = [...path, key];
-      if (blockedPropertyKey(key)) {
+      if (blockedPropertyKey(key, path)) {
         context.addIssue({
           code: "custom",
           message: `property ${key} may contain direct personal information and is not allowed`,
@@ -273,7 +392,7 @@ export const pixelEventSchema = z.object({
   }
   const state = { nodes: 0, overLimit: false };
   for (const [key, value] of entries) {
-    if (blockedPropertyKey(key)) {
+    if (blockedPropertyKey(key, ["properties"])) {
       context.addIssue({
         code: "custom",
         message: `property ${key} may contain direct personal information and is not allowed`,

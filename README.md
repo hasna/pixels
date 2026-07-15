@@ -147,7 +147,7 @@ startPixelsMcpHttpServer({
 
 Open Pixels is a technical enforcement layer, not legal advice or a complete consent-management platform. Its PII checks are bounded heuristics for common direct identifiers, not exhaustive classification or compliance proof. Applications remain responsible for their notices, retention, data processing agreements, geographic requirements, and correct classification of each provider. Never put secrets or direct personal information in browser-visible provider configuration or event properties.
 
-The recursive guard rejects common direct-name keys, phone/contact ancestry (including nested values and numeric arrays), embedded email/IP/phone values, and formatted phone values. It deliberately permits ordinary amounts, counters, and identifier fields such as numeric-string order IDs; callers must not use those fields to disguise personal information.
+The recursive guard rejects common direct-name keys, phone/contact ancestry (including nested values and numeric arrays), embedded email/IP/phone values, and formatted phone values. Human-name classification normalizes camel, snake, kebab, compact, case, and plural forms. Ambiguous `...Name` fields fail closed when their key or ancestry denotes a display, customer, contact, user, profile, member, person, recipient, author, or visitor; explicit non-person fields such as event, product, company, organization, campaign, category, and file names remain allowed. It deliberately permits ordinary amounts, counters, and identifier fields such as numeric-string order IDs; callers must not use those fields to disguise personal information.
 
 ## Development
 
