@@ -71,8 +71,127 @@ function canonicalPropertyToken(token: string): string {
   return canonicalPropertyTokens[token] ?? token;
 }
 
+const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
+  ...canonicalPropertyTokens,
+  address: "address",
+  alias: "alias",
+  attribute: "attribute",
+  author: "author",
+  campaign: "campaign",
+  category: "category",
+  cellphone: "cellphone",
+  client: "client",
+  code: "code",
+  company: "company",
+  contact: "contact",
+  count: "count",
+  counter: "counter",
+  customer: "customer",
+  data: "data",
+  description: "description",
+  detail: "detail",
+  display: "display",
+  email: "email",
+  event: "event",
+  extension: "extension",
+  family: "family",
+  field: "field",
+  file: "file",
+  first: "first",
+  forename: "forename",
+  full: "full",
+  given: "given",
+  group: "group",
+  id: "id",
+  identifier: "identifier",
+  index: "index",
+  info: "info",
+  information: "info",
+  ip: "ip",
+  label: "label",
+  last: "last",
+  legal: "legal",
+  list: "list",
+  key: "key",
+  maiden: "maiden",
+  mail: "mail",
+  member: "member",
+  metadata: "metadata",
+  mobile: "mobile",
+  name: "name",
+  note: "note",
+  number: "number",
+  of: "of",
+  order: "order",
+  organization: "organization",
+  person: "person",
+  phone: "phone",
+  postal: "postal",
+  preferred: "preferred",
+  price: "price",
+  product: "product",
+  profile: "profile",
+  quantity: "quantity",
+  rank: "rank",
+  recipient: "recipient",
+  record: "record",
+  remote: "remote",
+  source: "source",
+  street: "street",
+  surname: "surname",
+  tel: "tel",
+  telephone: "telephone",
+  text: "text",
+  total: "total",
+  user: "user",
+  value: "value",
+  visitor: "visitor",
+  zip: "zip",
+});
+
+function pluralPropertyWord(word: string): string {
+  if (/[^aeiou]y$/.test(word)) return `${word.slice(0, -1)}ies`;
+  if (/(?:s|x|z|ch|sh)$/.test(word)) return `${word}es`;
+  return `${word}s`;
+}
+
+const semanticPropertyWordVariants = Object.freeze(
+  Object.entries(semanticPropertyWords)
+    .flatMap(([word, canonical]) => {
+      const variants: Array<[string, string]> = [[word, canonical]];
+      variants.push([pluralPropertyWord(word), canonical]);
+      return variants;
+    })
+    .sort(([left], [right]) => right.length - left.length),
+);
+
+function segmentCompactPropertyToken(token: string): string[] | null {
+  const memo = new Map<number, string[] | null>();
+
+  function visit(offset: number): string[] | null {
+    if (offset === token.length) return [];
+    if (memo.has(offset)) return memo.get(offset)!;
+
+    for (const [variant, canonical] of semanticPropertyWordVariants) {
+      if (!token.startsWith(variant, offset)) continue;
+      const remainder = visit(offset + variant.length);
+      if (remainder) {
+        const result = [canonical, ...remainder];
+        memo.set(offset, result);
+        return result;
+      }
+    }
+
+    memo.set(offset, null);
+    return null;
+  }
+
+  return visit(0);
+}
+
 function canonicalPropertyKeyTokens(key: string): string[] {
-  return propertyKeyTokens(key).map(canonicalPropertyToken);
+  return propertyKeyTokens(key).flatMap((token) =>
+    segmentCompactPropertyToken(token) ?? [canonicalPropertyToken(token)]);
 }
 
 const safeNumericIdentifierTokens = new Set([
@@ -142,9 +261,56 @@ const safeNonPersonNameKeys = new Set([
   "filename",
 ]);
 
+const safeNonPersonNameTokens = new Set([
+  "event",
+  "product",
+  "company",
+  "organization",
+  "campaign",
+  "category",
+  "file",
+]);
+
+const safeNameStructureTokens = new Set([
+  ...safeNonPersonNameTokens,
+  "name",
+  "attribute",
+  "label",
+  "data",
+  "description",
+  "detail",
+  "field",
+  "group",
+  "info",
+  "key",
+  "list",
+  "metadata",
+  "of",
+  "record",
+  "value",
+]);
+
+const directHumanNameModifierTokens = new Set([
+  "alias",
+  "first",
+  "full",
+  "given",
+  "family",
+  "last",
+  "legal",
+  "maiden",
+  "preferred",
+]);
+
 function singularNameKeyCompact(key: string): string {
   const compact = canonicalPropertyKeyTokens(key).join("");
   return compact.endsWith("names") ? compact.slice(0, -1) : compact;
+}
+
+function isSafeNonPersonNameSemantic(tokens: string[]): boolean {
+  return tokens.includes("name")
+    && tokens.some((token) => safeNonPersonNameTokens.has(token))
+    && tokens.every((token) => safeNameStructureTokens.has(token));
 }
 
 function canonicalPersonalContextToken(token: string): string {
@@ -199,15 +365,15 @@ function pathHasPersonalNameContext(path: Array<string | number>): boolean {
 function blockedHumanNameKey(key: string, path: Array<string | number>): boolean {
   const terms = canonicalPropertyKeyTokens(key);
   const compact = singularNameKeyCompact(key);
-  if (safeNonPersonNameKeys.has(compact)) return false;
+  if (safeNonPersonNameKeys.has(compact) || isSafeNonPersonNameSemantic(terms)) return false;
   if (directHumanNameKeys.has(compact)) return true;
   const hasNameSemantic = compact.endsWith("name")
-    || terms.some((term) => directHumanNameKeys.has(term));
+    || terms.includes("name")
+    || terms.some((term) => ["forename", "surname"].includes(term));
   if (!hasNameSemantic) return false;
 
-  const qualifier = compact.slice(0, -"name".length);
+  if (terms.some((term) => directHumanNameModifierTokens.has(term))) return true;
   if (hasPersonalContextToken(terms)) return true;
-  if (compact.endsWith("name") && compactHasPersonalContext(qualifier)) return true;
   return pathHasPersonalNameContext(path);
 }
 

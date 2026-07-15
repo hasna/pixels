@@ -14,6 +14,14 @@ function request(overrides: Partial<EvaluationRequest> = {}): EvaluationRequest 
   };
 }
 
+function permutations(tokens: string[]): string[][] {
+  if (tokens.length <= 1) return [tokens];
+  return tokens.flatMap((token, index) => permutations([
+    ...tokens.slice(0, index),
+    ...tokens.slice(index + 1),
+  ]).map((remainder) => [token, ...remainder]));
+}
+
 describe("evaluatePixelEvent", () => {
   test("is disabled and empty-allowlist by default", () => {
     expect(DEFAULT_POLICY.enabled).toBeFalse();
@@ -167,6 +175,128 @@ describe("evaluatePixelEvent", () => {
       ["ordinary contact text", { contactNote: "reach the support team" }],
     );
 
+    for (const [label, properties] of safeCases) {
+      expect(() => evaluatePixelEvent(request({
+        event: { name: "page_view", properties: properties as EvaluationRequest["event"]["properties"] },
+      })), label).not.toThrow();
+    }
+  });
+
+  test("rejects generated compact personal-name semantics in any token order", () => {
+    const tokenSequences = [
+      ["name", "of", "customer"],
+      ["names", "of", "customers"],
+      ...permutations(["customer", "name", "label"]),
+      ...permutations(["customers", "names", "labels"]),
+      ["label", "name", "recipient"],
+      ["visitor", "detail", "full", "name"],
+    ];
+    const renderers: Array<[string, (tokens: string[]) => string]> = [
+      ["compact", (tokens) => tokens.join("")],
+      ["uppercase compact", (tokens) => tokens.join("").toUpperCase()],
+      ["camel", (tokens) => tokens[0] + tokens.slice(1).map((token) =>
+        token[0]!.toUpperCase() + token.slice(1)).join("")],
+      ["snake", (tokens) => tokens.join("_")],
+      ["kebab", (tokens) => tokens.join("-")],
+    ];
+
+    for (const tokens of tokenSequences) {
+      for (const [style, render] of renderers) {
+        const key = render(tokens);
+        expect(() => evaluatePixelEvent(request({
+          event: { name: "lead", properties: { [key]: "Ada Lovelace" } },
+        })), `${style} ${tokens.join(" ")}`).toThrow();
+      }
+    }
+
+    const nestedCases: Array<[string, Record<string, unknown>]> = [
+      ["nested compact name of customer", { customerdata: { nameofcustomer: "Ada Lovelace" } }],
+      ["array compact customer name label", {
+        profiles: [{ customernamelabel: "Ada Lovelace" }],
+      }],
+      ["nested plural compact customer names label", {
+        records: { customernameslabel: ["Ada Lovelace"] },
+      }],
+      ["compact customer name field", { customernamefield: "Ada Lovelace" }],
+      ["compact name of customer attribute", { nameofcustomerattribute: "Ada Lovelace" }],
+    ];
+    for (const [label, properties] of nestedCases) {
+      expect(() => evaluatePixelEvent(request({
+        event: { name: "lead", properties: properties as EvaluationRequest["event"]["properties"] },
+      })), label).toThrow();
+    }
+  });
+
+  test("rejects generated compact contact-phone semantics while preserving safe leaves", () => {
+    const phoneSequences = [
+      ...permutations(["contact", "phone", "number"]),
+      ...permutations(["contacts", "phone", "numbers"]),
+      ["phone", "of", "contact"],
+      ["telephone", "of", "customer"],
+      ["member", "mobile", "number"],
+    ];
+    const renderers: Array<[string, (tokens: string[]) => string]> = [
+      ["compact", (tokens) => tokens.join("")],
+      ["uppercase compact", (tokens) => tokens.join("").toUpperCase()],
+      ["camel", (tokens) => tokens[0] + tokens.slice(1).map((token) =>
+        token[0]!.toUpperCase() + token.slice(1)).join("")],
+      ["snake", (tokens) => tokens.join("_")],
+      ["kebab", (tokens) => tokens.join("-")],
+    ];
+    for (const tokens of phoneSequences) {
+      for (const [style, render] of renderers) {
+        const key = render(tokens);
+        expect(() => evaluatePixelEvent(request({
+          event: { name: "lead", properties: { [key]: 15551234567 } },
+        })), `${style} ${tokens.join(" ")}`).toThrow();
+      }
+    }
+
+    const nestedCases: Array<[string, Record<string, unknown>]> = [
+      ["compact contact details value", { contactdetails: { value: 15551234567 } }],
+      ["compact customer contacts array value", {
+        customercontacts: [{ value: 15551234567 }],
+      }],
+      ["compact member contact info value", { membercontactinfo: { value: "15551234567" } }],
+      ["compact customer contact information value", {
+        customercontactinformation: { value: "15551234567" },
+      }],
+      ["compact contact phone numbers array", { contactphonenumbers: [15551234567] }],
+      ["compact contact phone number value", { contactphonenumbervalue: 15551234567 }],
+    ];
+    for (const [label, properties] of nestedCases) {
+      expect(() => evaluatePixelEvent(request({
+        event: { name: "lead", properties: properties as EvaluationRequest["event"]["properties"] },
+      })), label).toThrow();
+    }
+
+    const safeCases: Array<[string, Record<string, unknown>]> = [
+      ["safe compact entity names", {
+        eventname: "page_view",
+        productnames: ["Nutrition Journal"],
+        COMPANYNAME: "Hasna Inc.",
+        organizationnames: ["Hasna Inc."],
+        campaignnamelabel: "organic-search",
+        campaignnamefield: "utm_campaign",
+        companynamedescription: "publisher",
+        categorynames: ["research"],
+        filenames: ["index.html"],
+      }],
+      ["safe compact numeric leaves", {
+        customercontactid: 15551234567,
+        contactcount: 15551234567,
+        phonecount: 15551234567,
+        orderid: 15551234567,
+        amount: 15551234567,
+      }],
+      ["safe contact text", {
+        contactnote: "reach the support team",
+        contacttext: "support desk",
+        authoritativeName: "primary-dns-record",
+        hostname: "news.example.test",
+        domainName: "example.test",
+      }],
+    ];
     for (const [label, properties] of safeCases) {
       expect(() => evaluatePixelEvent(request({
         event: { name: "page_view", properties: properties as EvaluationRequest["event"]["properties"] },

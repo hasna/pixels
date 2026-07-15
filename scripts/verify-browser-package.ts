@@ -28,11 +28,18 @@ try {
   mkdirSync(archiveDirectory, { recursive: true });
   mkdirSync(packageRoot, { recursive: true });
 
-  const archiveName = run(["npm", "pack", "--ignore-scripts", "--pack-destination", archiveDirectory])
-    .trim()
-    .split("\n")
-    .at(-1);
-  if (!archiveName) throw new Error("npm pack did not return an archive name");
+  const packResult = JSON.parse(run([
+    "npm",
+    "pack",
+    "--ignore-scripts",
+    "--json",
+    "--pack-destination",
+    archiveDirectory,
+  ])) as Array<{ filename?: unknown }>;
+  const archiveName = packResult[0]?.filename;
+  if (typeof archiveName !== "string" || archiveName.length === 0) {
+    throw new Error("npm pack did not return a structured archive name");
+  }
   run(["tar", "-xzf", join(archiveDirectory, archiveName), "-C", packageRoot, "--strip-components=1"]);
 
   // A normal npm consumer installs declared runtime dependencies beside the package.
