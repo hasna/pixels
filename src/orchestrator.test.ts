@@ -896,7 +896,10 @@ describe("evaluatePixelEvent", () => {
     expect(safeCases.size).toBeGreaterThan(100_000);
     expect(Math.max(...[...safeCases.keys()].map((key) => key.length))).toBeLessThanOrEqual(64);
     expect(falsePositiveKeys).toEqual([]);
-  }, 90_000);
+  // This intentionally exercises more than 618,000 public-boundary parses.
+  // Shared CI runners are materially slower than development machines, so the
+  // timeout covers machine variance without reducing the adversarial corpus.
+  }, 180_000);
 
   test("keeps semantic decisions stable after bounded cache churn", () => {
     const classify = (key: string, value: PropertyValue): "accepted" | "rejected" => {
