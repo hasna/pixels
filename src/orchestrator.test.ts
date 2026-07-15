@@ -107,7 +107,25 @@ describe("evaluatePixelEvent", () => {
     ];
     const combiningMarks = ["\u0301", "\u0300", "\u0308", "\u0327"];
     const hostileCases = new Map<string, PropertyValue>();
+    const arbitraryAsciiCaseVariants = (value: string): string[] => {
+      const variants = [""];
+      for (const character of value) {
+        if (!/[a-z]/i.test(character)) {
+          for (let index = 0; index < variants.length; index += 1) variants[index] += character;
+          continue;
+        }
+        const current = [...variants];
+        variants.length = 0;
+        for (const prefix of current) {
+          variants.push(`${prefix}${character.toLowerCase()}`, `${prefix}${character.toUpperCase()}`);
+        }
+      }
+      return variants;
+    };
     for (const key of sensitiveKeys) {
+      for (const variant of arbitraryAsciiCaseVariants(key)) {
+        hostileCases.set(variant, 15551234567);
+      }
       for (let index = 0; index < key.length; index += 1) {
         if (!/[a-z]/.test(key[index]!)) continue;
         for (const mark of combiningMarks) {
@@ -134,6 +152,13 @@ describe("evaluatePixelEvent", () => {
       "cliеnt_ip",
       "сellular_value", // Cyrillic es.
       "cellular_numвer", // Cyrillic ve.
+      "pһone", // Cyrillic small shha.
+      "cӏient_ip", // Cyrillic small palochka.
+      "poѕtal_code", // Cyrillic small dze.
+      "phoնe", // Armenian small now.
+      "phøne", // Latin small o with stroke.
+      "pҺØՆE", // Mixed case, Cyrillic shha, Latin o-stroke, and Armenian now.
+      "p\u0301ҺØՆE", // Decomposed mark plus mixed-case confusables.
       "ｐｈｏｎｅ", // Fullwidth compatibility characters.
       "𝐩𝐡𝐨𝐧𝐞", // Mathematical bold compatibility characters.
     ]) hostileCases.set(key, 15551234567);
@@ -147,7 +172,7 @@ describe("evaluatePixelEvent", () => {
         // Expected: classification is Unicode-canonical and fails before dispatch.
       }
     }
-    expect(hostileCases.size).toBeGreaterThanOrEqual(500);
+    expect(hostileCases.size).toBeGreaterThanOrEqual(2_000);
     expect(missedHostileKeys).toEqual([]);
 
     const safeInternationalMetadata: Record<string, PropertyValue> = {
@@ -1024,9 +1049,23 @@ describe("PixelOrchestrator", () => {
       providers: [ga],
     });
     let dispatches = 0;
-    for (const key of ["phóne", "phóne".normalize("NFD"), "phοne", "clíent_ip"]) {
+    for (const properties of [
+      { profile: { pHONE: 15551234567 } },
+      { profile: { pҺØՆE: 15551234567 } },
+      { profile: { emAil: "synthetic@example.invalid" } },
+      { aDdress: "synthetic" },
+      { sTreet: "synthetic" },
+      { postaL_code: "synthetic" },
+      { zIp: "synthetic" },
+      { cLient_ip: "synthetic" },
+      { pһone: 15551234567 },
+      { cӏient_ip: "synthetic" },
+      { poѕtal_code: "synthetic" },
+      { phoնe: 15551234567 },
+      { phøne: 15551234567 },
+    ]) {
       await expect(orchestrator.dispatch({
-        event: { name: "lead", properties: { [key]: 15551234567 } },
+        event: { name: "lead", properties },
         consent: { analytics: true, advertising: false },
       }, {
         dispatch() { dispatches += 1; },

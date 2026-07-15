@@ -38,6 +38,9 @@ const mixedScriptAsciiConfusables: Readonly<Record<string, string>> = Object.fre
   "ρ": "p",
   "τ": "t",
   "χ": "x",
+  // Latin characters that do not compatibility-decompose to their ASCII
+  // visual counterpart.
+  "ø": "o",
   // Cyrillic characters commonly substituted into otherwise-Latin identifiers.
   "а": "a",
   "в": "b",
@@ -53,6 +56,11 @@ const mixedScriptAsciiConfusables: Readonly<Record<string, string>> = Object.fre
   "т": "t",
   "у": "y",
   "х": "x",
+  "һ": "h",
+  "ӏ": "l",
+  "ѕ": "s",
+  // Armenian small now is visually close to a Latin n in mixed identifiers.
+  "ն": "n",
 });
 
 function foldMixedScriptAsciiConfusables(value: string): string {
@@ -69,16 +77,16 @@ function foldMixedScriptAsciiConfusables(value: string): string {
  * Produces a classification-only copy of a property key. The original key is
  * retained in the event and in validation errors. Compatibility decomposition
  * plus mark removal makes NFC/NFD and accented Latin renderings equivalent;
- * upper/lower expansion approximates Unicode default case folding. A bounded
- * confusable skeleton is applied only to mixed ASCII/Greek/Cyrillic words, so
+ * upper/lower expansion approximates Unicode default case folding. Letter case
+ * is deliberately never treated as a trusted semantic boundary: adversarial
+ * capitalization must classify exactly like compact lowercase spelling, while
+ * stable punctuation still separates words. A bounded confusable skeleton is
+ * applied only to words containing ASCII and an allowlisted lookalike, so
  * ordinary non-Latin metadata is not transliterated or blanket-rejected.
  */
 function classificationPropertyKey(key: string): string {
   const decomposed = key.normalize("NFKD").replace(/\p{M}+/gu, "");
-  const separated = decomposed
-    .replace(/(\p{Lu}+)(\p{Lu}\p{Ll})/gu, "$1_$2")
-    .replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1_$2");
-  return foldMixedScriptAsciiConfusables(separated.toUpperCase().toLowerCase());
+  return foldMixedScriptAsciiConfusables(decomposed.toUpperCase().toLowerCase());
 }
 
 function propertyKeyTokens(key: string): string[] {
@@ -132,6 +140,7 @@ function canonicalPropertyToken(token: string): string {
 const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
   ...canonicalPropertyTokens,
   address: "address",
+  agent: "agent",
   alias: "alias",
   alternate: "alternate",
   amount: "amount",

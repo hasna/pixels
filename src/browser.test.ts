@@ -95,6 +95,19 @@ describe("browser dispatcher", () => {
       { ["phóne".normalize("NFD")]: 15551234567 },
       { phοne: 15551234567 },
       { clíent_ip: "synthetic" },
+      { profile: { pHONE: 15551234567 } },
+      { profile: { pҺØՆE: 15551234567 } },
+      { emAil: "synthetic@example.invalid" },
+      { aDdress: "synthetic" },
+      { sTreet: "synthetic" },
+      { postaL_code: "synthetic" },
+      { zIp: "synthetic" },
+      { cLient_ip: "synthetic" },
+      { pһone: 15551234567 },
+      { cӏient_ip: "synthetic" },
+      { poѕtal_code: "synthetic" },
+      { phoնe: 15551234567 },
+      { phøne: 15551234567 },
     ]) {
       await expect(client.track({
         name: "lead",
@@ -123,6 +136,9 @@ describe("browser dispatcher", () => {
         "région_du_réseau": "Europe",
         "categoria_móvil": "actualités",
         "équipe_cellulaire": "plateforme",
+        "cellular_οrganization": "Opérateur réseau",
+        "cellular_οRGANIZATION": "Opérateur réseau",
+        "сellular_app": "lector",
       },
     }, { analytics: true, advertising: false });
 
