@@ -100,15 +100,76 @@ describe("pinned Unicode privacy boundary", () => {
     }
   });
 
-  test("bounds wildcard work for the maximum property-key length", () => {
+  test("applies each official source mapping before normalization across normalization and case forms", () => {
+    const corpus = independentUnicodeConfusableCorpus();
+    expect(corpus.officialNormalizationHostileKeys.length).toBeGreaterThan(10_000);
+    const misses: string[] = [];
+    for (const key of corpus.officialNormalizationHostileKeys) {
+      try {
+        evaluatePixelEvent(request({ [key]: 15551234567 }));
+        if (misses.length < 20) misses.push(key);
+      } catch {
+        // Expected fail-closed result.
+      }
+    }
+    expect(misses).toEqual([]);
+  });
+
+  test("preserves official normalization variants for safe telecom entity metadata", () => {
+    const corpus = independentUnicodeConfusableCorpus();
+    expect(corpus.safeNormalizationTelecomKeys.length).toBeGreaterThan(2_000);
+    const falsePositives: string[] = [];
+    for (const key of corpus.safeNormalizationTelecomKeys) {
+      try {
+        evaluatePixelEvent(request({ [key]: "carrier metadata" }));
+      } catch {
+        if (falsePositives.length < 20) falsePositives.push(key);
+      }
+    }
+    expect(falsePositives).toEqual([]);
+  });
+
+  test("rejects a maximum-width wildcard key before semantic cache-churn work", () => {
     const key = `a${"Ж".repeat(63)}`;
     const started = performance.now();
-    expect(() => evaluatePixelEvent(request({ [key]: "metadata" }))).not.toThrow();
+    expect(() => evaluatePixelEvent(request({ [key]: "metadata" }))).toThrow("classification work budget");
+    expect(performance.now() - started).toBeLessThan(50);
+  });
+
+  test("rejects cold cache-churning maximum legal payloads without monopolizing the event loop", async () => {
+    const handler = createPixelsHttpHandler();
+    const payloads = Array.from({ length: 5 }, (_, requestIndex) => request(Object.fromEntries(
+      Array.from({ length: 50 }, (_, keyIndex) => [
+        `a${String.fromCodePoint(0x400 + requestIndex * 64 + keyIndex).repeat(61)}${requestIndex}${keyIndex}`.slice(0, 64),
+        "metadata",
+      ]),
+    )));
+    const timerStarted = performance.now();
+    let timerDelay = Number.POSITIVE_INFINITY;
+    const timer = new Promise<void>((resolve) => setTimeout(() => {
+      timerDelay = performance.now() - timerStarted;
+      resolve();
+    }, 0));
+    const started = performance.now();
+    const responses = await Promise.all(payloads.map((payload) => handler(new Request("http://local/v1/evaluate", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }))));
+    await timer;
+    expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 400, 400]);
     expect(performance.now() - started).toBeLessThan(250);
+    expect(timerDelay).toBeLessThan(100);
   });
 
   test("blocks independently generated keys before browser, API, CLI, and MCP effects", async () => {
-    const samples = generatedHostileSamples();
+    const samples = [
+      "ph𝟎ne",
+      "emaiＩ",
+      "ſirstname",
+      "emẚil",
+      "ceⅡularnumber",
+      ...generatedHostileSamples(),
+    ];
 
     const browser = browserEnvironment();
     const browserClient = new BrowserPixelClient({

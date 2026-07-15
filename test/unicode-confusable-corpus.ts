@@ -9,9 +9,11 @@ const sourcePath = join(import.meta.dir, "..", "scripts", "unicode", "confusable
 interface IndependentCorpus {
   readonly sourceSha256: string;
   readonly officialHostileKeys: readonly string[];
+  readonly officialNormalizationHostileKeys: readonly string[];
   readonly conservativeWildcardKeys: readonly string[];
   readonly pureMultilingualKeys: readonly string[];
   readonly safeMixedTelecomKeys: readonly string[];
+  readonly safeNormalizationTelecomKeys: readonly string[];
 }
 
 let cachedCorpus: IndependentCorpus | undefined;
@@ -59,8 +61,38 @@ export function independentUnicodeConfusableCorpus(): IndependentCorpus {
     "customername", "firstname", "lastname", "fullname", "surname", "forename",
   ];
   const officialHostileKeys = new Set<string>();
+  const officialNormalizationHostileKeys = new Set<string>();
   const safeMixedTelecomKeys = new Set<string>();
-  for (const [sourceCharacter] of mappings) {
+  const safeNormalizationTelecomKeys = new Set<string>();
+  for (const [sourceCharacter, officialTarget] of mappings) {
+    const normalizationForms = new Set<string>();
+    for (const form of ["NFC", "NFD", "NFKC", "NFKD"] as const) {
+      const normalized = sourceCharacter.normalize(form);
+      normalizationForms.add(normalized);
+      normalizationForms.add(normalized.toLowerCase());
+      normalizationForms.add(normalized.toUpperCase());
+    }
+    for (const sourceForm of normalizationForms) {
+      for (const safeTerm of ["organization", "application", "network"]) {
+        let safeOffset = safeTerm.indexOf(officialTarget);
+        while (safeOffset >= 0) {
+          safeNormalizationTelecomKeys.add(
+            `cellular_${safeTerm.slice(0, safeOffset)}${sourceForm}${safeTerm.slice(safeOffset + officialTarget.length)}`,
+          );
+          safeOffset = safeTerm.indexOf(officialTarget, safeOffset + 1);
+        }
+      }
+      for (const template of sensitiveTemplates) {
+        let offset = template.indexOf(officialTarget);
+        while (offset >= 0) {
+          officialNormalizationHostileKeys.add(
+            `${template.slice(0, offset)}${sourceForm}${template.slice(offset + officialTarget.length)}`,
+          );
+          offset = template.indexOf(officialTarget, offset + 1);
+        }
+      }
+    }
+
     const runtimeCharacter = sourceCharacter
       .normalize("NFKD")
       .replace(/\p{M}+/gu, "");
@@ -113,9 +145,11 @@ export function independentUnicodeConfusableCorpus(): IndependentCorpus {
   cachedCorpus = Object.freeze({
     sourceSha256,
     officialHostileKeys: Object.freeze([...officialHostileKeys]),
+    officialNormalizationHostileKeys: Object.freeze([...officialNormalizationHostileKeys]),
     conservativeWildcardKeys: Object.freeze([...conservativeWildcardKeys]),
     pureMultilingualKeys: Object.freeze([...pureMultilingualKeys]),
     safeMixedTelecomKeys: Object.freeze([...safeMixedTelecomKeys]),
+    safeNormalizationTelecomKeys: Object.freeze([...safeNormalizationTelecomKeys]),
   });
   return cachedCorpus;
 }

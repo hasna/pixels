@@ -67,6 +67,33 @@ describe("MCP HTTP transport", () => {
     expect(responses.map((response) => response.status)).toEqual([200, 200]);
   });
 
+  test("rejects declared and streamed bodies over the transport budget", async () => {
+    const declared = initializeRequest();
+    declared.headers.set("content-length", String(2 * 1024 * 1024));
+    const declaredResponse = await handlePixelsMcpHttpRequest(declared);
+    expect(declaredResponse.status).toBe(413);
+
+    const oversizedBody = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "x".repeat(70 * 1024), version: "1.0.0" },
+      },
+    });
+    const streamedResponse = await handlePixelsMcpHttpRequest(new Request("http://127.0.0.1:8892/mcp", {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: oversizedBody,
+    }));
+    expect(streamedResponse.status).toBe(413);
+  });
+
   test("fails closed when HTTP authentication rejects or is unavailable", async () => {
     const rejected = await handlePixelsMcpHttpRequest(initializeRequest(), { authorize: () => false });
     expect(rejected.status).toBe(401);

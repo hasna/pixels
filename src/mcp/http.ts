@@ -18,6 +18,8 @@ export interface PixelsMcpHttpServer {
   stop(closeActiveConnections?: boolean): void;
 }
 
+const MAX_MCP_HTTP_BODY_BYTES = 64 * 1024;
+
 const SECURITY_HEADERS = {
   "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff",
@@ -27,6 +29,59 @@ function securityResponse(status: number, error: string): Response {
   return Response.json({ jsonrpc: "2.0", error: { code: -32000, message: error }, id: null }, {
     status,
     headers: SECURITY_HEADERS,
+  });
+}
+
+async function requestWithBoundedBody(request: Request): Promise<Request | Response> {
+  if (request.body === null) return request;
+  const declared = request.headers.get("content-length");
+  if (declared !== null) {
+    const declaredBytes = Number(declared);
+    if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0) {
+      return securityResponse(400, "invalid content length");
+    }
+    if (declaredBytes > MAX_MCP_HTTP_BODY_BYTES) {
+      return securityResponse(413, "request body exceeds 64 KiB");
+    }
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      if (request.signal.aborted) {
+        await reader.cancel().catch(() => {});
+        return securityResponse(408, "request aborted");
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_MCP_HTTP_BODY_BYTES) {
+        await reader.cancel().catch(() => {});
+        return securityResponse(413, "request body exceeds 64 KiB");
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return request.signal.aborted
+      ? securityResponse(408, "request aborted")
+      : securityResponse(400, "unable to read request body");
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const headers = new Headers(request.headers);
+  headers.set("content-length", String(totalBytes));
+  return new Request(request.url, {
+    method: request.method,
+    headers,
+    body,
+    signal: request.signal,
   });
 }
 
@@ -86,10 +141,12 @@ export async function handlePixelsMcpHttpRequest(
   }
 
   try {
+    const boundedRequest = await requestWithBoundedBody(request);
+    if (boundedRequest instanceof Response) return boundedRequest;
     const server = buildPixelsMcpServer();
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     await server.connect(transport);
-    return await transport.handleRequest(request);
+    return await transport.handleRequest(boundedRequest);
   } catch {
     return securityResponse(500, "internal server error");
   }

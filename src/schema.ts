@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { ASCII_CONFUSABLE_SKELETON_ENTRIES } from "./generated/unicode-confusables.js";
+import {
+  ASCII_CONFUSABLE_SKELETON_DATA,
+  ASCII_NORMALIZATION_CONFUSABLE_ALIAS_DATA,
+  NON_ASCII_NORMALIZATION_CONFUSABLE_ALIAS_DATA,
+} from "./generated/unicode-confusables.js";
 import { PROVIDER_IDS } from "./types.js";
 import type { PropertyValue } from "./types.js";
 
@@ -28,8 +32,84 @@ function buildPropertyValueSchema(depth: number): z.ZodType<PropertyValue> {
 const propertyValue = buildPropertyValueSchema(4);
 const embeddedEmailValue = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}/i;
 
-const asciiConfusableSkeletons = new Map<number, string>(ASCII_CONFUSABLE_SKELETON_ENTRIES);
+function compactDataPairs(data: string): Array<readonly [string, string]> {
+  if (data.length === 0) return [];
+  return data.split("\u001E").map((record) => {
+    const separator = record.indexOf("\u001F");
+    return [record.slice(0, separator), record.slice(separator + 1)] as const;
+  });
+}
+
+const asciiConfusableSkeletons = new Map<number, string>(
+  compactDataPairs(ASCII_CONFUSABLE_SKELETON_DATA)
+    .map(([codePoint, target]) => [Number.parseInt(codePoint, 36), target]),
+);
 const MIXED_SCRIPT_CLASSIFICATION_WILDCARD = "?";
+const CONFUSABLE_TARGET_MARKER_START = 0xe000;
+const MAX_NORMALIZATION_ALIAS_TOKEN_LENGTH = 18;
+
+const nonAsciiNormalizationTargets = new Map<string, Set<string>>();
+for (const [source, target] of compactDataPairs(NON_ASCII_NORMALIZATION_CONFUSABLE_ALIAS_DATA)) {
+  const targets = nonAsciiNormalizationTargets.get(source) ?? new Set<string>();
+  targets.add(target);
+  const sourceCharacters = [...source];
+  if (sourceCharacters.length === 1
+    && /^[\p{L}\p{N}]$/u.test(source)
+    && !asciiConfusableSkeletons.has(source.codePointAt(0)!)) {
+    targets.add(MIXED_SCRIPT_CLASSIFICATION_WILDCARD);
+  }
+  nonAsciiNormalizationTargets.set(source, targets);
+}
+const confusableTargetMarkerBySignature = new Map<string, string>();
+const confusableTargetMarkerTargets = new Map<string, readonly string[]>();
+const targetSignatures = [...new Set([...nonAsciiNormalizationTargets.values()]
+  .filter((targets) => targets.size > 1)
+  .map((targets) => [...targets].sort().join("\0")))]
+  .sort();
+for (const [index, signature] of targetSignatures.entries()) {
+  const marker = String.fromCodePoint(CONFUSABLE_TARGET_MARKER_START + index);
+  confusableTargetMarkerBySignature.set(signature, marker);
+  confusableTargetMarkerTargets.set(marker, Object.freeze(signature.split("\0").sort((left, right) => {
+    if (left === MIXED_SCRIPT_CLASSIFICATION_WILDCARD) return 1;
+    if (right === MIXED_SCRIPT_CLASSIFICATION_WILDCARD) return -1;
+    return left === right ? 0 : left < right ? -1 : 1;
+  })));
+}
+const nonAsciiNormalizationAliasesByInitial = new Map<
+  string,
+  ReadonlyArray<readonly [string, string]>
+>();
+for (const [source, targets] of nonAsciiNormalizationTargets) {
+  const signature = [...targets].sort().join("\0");
+  const replacement = targets.size === 1
+    ? [...targets][0]!
+    : confusableTargetMarkerBySignature.get(signature)!;
+  const initial = source[0]!;
+  const entries = nonAsciiNormalizationAliasesByInitial.get(initial) ?? [];
+  nonAsciiNormalizationAliasesByInitial.set(initial, [...entries, [source, replacement] as const]);
+}
+for (const [initial, entries] of nonAsciiNormalizationAliasesByInitial) {
+  nonAsciiNormalizationAliasesByInitial.set(initial, [...entries].sort(([left], [right]) =>
+    right.length - left.length || (left === right ? 0 : left < right ? -1 : 1)));
+}
+
+function applyNonAsciiNormalizationAliases(value: string): string {
+  if (!/[a-z]/i.test(value)) return value;
+  let output = "";
+  for (let offset = 0; offset < value.length;) {
+    const candidates = nonAsciiNormalizationAliasesByInitial.get(value[offset]!) ?? [];
+    const match = candidates.find(([source]) => value.startsWith(source, offset));
+    if (match) {
+      output += match[1];
+      offset += match[0].length;
+      continue;
+    }
+    const character = String.fromCodePoint(value.codePointAt(offset)!);
+    output += character;
+    offset += character.length;
+  }
+  return output;
+}
 
 function foldMixedScriptUnicodeSkeleton(value: string): string {
   return value.replace(/[\p{L}\p{N}]+/gu, (word) => {
@@ -43,11 +123,31 @@ function foldMixedScriptUnicodeSkeleton(value: string): string {
       if (/^[a-z0-9]$/i.test(character)) return character;
       const skeleton = asciiConfusableSkeletons.get(character.codePointAt(0)!);
       if (skeleton) return skeleton;
-      return /^[\p{L}\p{N}]$/u.test(character)
-        ? MIXED_SCRIPT_CLASSIFICATION_WILDCARD
-        : character;
+      const decomposed = character.normalize("NFKD").replace(/\p{M}+/gu, "");
+      return [...decomposed].map((part) => {
+        if (/^[a-z0-9]$/i.test(part)) return part;
+        const decomposedSkeleton = asciiConfusableSkeletons.get(part.codePointAt(0)!);
+        if (decomposedSkeleton) return decomposedSkeleton;
+        return /^[\p{L}\p{N}]$/u.test(part)
+          ? MIXED_SCRIPT_CLASSIFICATION_WILDCARD
+          : part;
+      }).join("");
     }).join("");
   });
+}
+
+const classificationPropertyKeyCache = new Map<string, string>();
+const propertyKeyTokensCache = new Map<string, readonly string[]>();
+const canonicalPropertyKeyTokensCache = new Map<string, readonly string[]>();
+const segmentCompactPropertyTokenCache = new Map<string, readonly string[] | null>();
+const MAX_PROPERTY_CLASSIFICATION_CACHE = 4_096;
+
+function setBoundedCache<K, V>(cache: Map<K, V>, key: K, value: V): void {
+  if (cache.size >= MAX_PROPERTY_CLASSIFICATION_CACHE) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, value);
 }
 
 /**
@@ -63,17 +163,45 @@ function foldMixedScriptUnicodeSkeleton(value: string): string {
  * wildcards; ordinary non-Latin words are not transliterated or rejected.
  */
 function classificationPropertyKey(key: string): string {
-  const decomposed = key.normalize("NFKD").replace(/\p{M}+/gu, "");
+  const cached = classificationPropertyKeyCache.get(key);
+  if (cached !== undefined) return cached;
   // UTS #39 mappings are code-point-specific. Apply the skeleton before case
   // folding so a case pair cannot first collapse into a different confusable
   // class (for example, Greek lunate sigma versus ordinary sigma).
-  return foldMixedScriptUnicodeSkeleton(decomposed).toUpperCase().toLowerCase();
+  const classified = foldMixedScriptUnicodeSkeleton(applyNonAsciiNormalizationAliases(key))
+    .normalize("NFKD")
+    .replace(/\p{M}+/gu, "")
+    .toUpperCase()
+    .toLowerCase();
+  setBoundedCache(classificationPropertyKeyCache, key, classified);
+  return classified;
 }
 
 function propertyKeyTokens(key: string): string[] {
+  const cached = propertyKeyTokensCache.get(key);
+  if (cached) return [...cached];
+  const tokens = classificationPropertyKey(key)
+    .split(/[^a-z0-9?\uE000-\uF8FF]+/)
+    .filter(Boolean)
+    .flatMap((token) => {
+      const variants = classificationTokenVariants(token);
+      if (segmentCompactPropertyToken(variants[0]!) !== null) return [variants[0]!];
+      const recognized = variants.filter((variant) => segmentCompactPropertyToken(variant) !== null);
+      return recognized.length > 0 ? recognized : variants;
+    });
+  setBoundedCache(propertyKeyTokensCache, key, Object.freeze(tokens));
+  return [...tokens];
+}
+
+function identityPropertyKeyTokens(key: string): string[] {
   return classificationPropertyKey(key)
-    .split(/[^a-z0-9?]+/)
+    .split(/[^a-z0-9?\uE000-\uF8FF]+/)
     .filter(Boolean);
+}
+
+function identityCanonicalPropertyKeyTokens(key: string): string[] {
+  return identityPropertyKeyTokens(key).flatMap((token) =>
+    segmentCompactPropertyToken(token) ?? [canonicalPropertyToken(token)]);
 }
 
 const canonicalPropertyTokens: Readonly<Record<string, string>> = Object.freeze({
@@ -258,21 +386,104 @@ for (const entry of semanticPropertyWordVariants) {
   semanticPropertyWordVariantsByInitial.set(initial, [...entries, entry]);
 }
 
-function semanticVariantsAt(token: string, offset: number): ReadonlyArray<readonly [string, string]> {
-  if (token[offset] === MIXED_SCRIPT_CLASSIFICATION_WILDCARD) return semanticPropertyWordVariants;
-  return semanticPropertyWordVariantsByInitial.get(token[offset] ?? "") ?? [];
+const normalizationConfusableAliasesByInitial = new Map<
+  string,
+  ReadonlyArray<readonly [string, string]>
+>();
+for (const entry of compactDataPairs(ASCII_NORMALIZATION_CONFUSABLE_ALIAS_DATA)) {
+  const initial = entry[0][0]!;
+  const entries = normalizationConfusableAliasesByInitial.get(initial) ?? [];
+  normalizationConfusableAliasesByInitial.set(initial, [...entries, entry]);
 }
 
-function tokenMatchesVariantAt(token: string, variant: string, offset: number): boolean {
-  if (offset + variant.length > token.length) return false;
-  for (let index = 0; index < variant.length; index += 1) {
-    const character = token[offset + index];
-    if (character !== MIXED_SCRIPT_CLASSIFICATION_WILDCARD && character !== variant[index]) return false;
+function normalizationAliasesAt(token: string, offset: number): ReadonlyArray<readonly [string, string]> {
+  if (token.length > MAX_NORMALIZATION_ALIAS_TOKEN_LENGTH) return [];
+  return (normalizationConfusableAliasesByInitial.get(token[offset] ?? "") ?? [])
+    .filter(([source]) => token.startsWith(source, offset));
+}
+
+function classificationTokenVariants(token: string): string[] {
+  let markerVariants = [""];
+  for (const character of token) {
+    const targets = confusableTargetMarkerTargets.get(character) ?? [character];
+    markerVariants = markerVariants.flatMap((prefix) => targets.map((target) => `${prefix}${target}`));
+    if (markerVariants.length > 64) {
+      markerVariants = markerVariants.slice(0, 64);
+      break;
+    }
   }
-  return true;
+
+  const variants = new Set(markerVariants);
+  if (token.length > MAX_NORMALIZATION_ALIAS_TOKEN_LENGTH) return [...variants];
+  for (const base of markerVariants) {
+    for (let offset = 0; offset < base.length; offset += 1) {
+      for (const [source, target] of normalizationAliasesAt(base, offset)) {
+        variants.add(`${base.slice(0, offset)}${target}${base.slice(offset + source.length)}`);
+      }
+    }
+  }
+  return [...variants];
+}
+
+function semanticVariantsAt(token: string, offset: number): ReadonlyArray<readonly [string, string]> {
+  if (token[offset] === MIXED_SCRIPT_CLASSIFICATION_WILDCARD) return semanticPropertyWordVariants;
+  const initials = new Set<string>([token[offset] ?? ""]);
+  for (const [, target] of normalizationAliasesAt(token, offset)) initials.add(target[0]!);
+  for (const target of confusableTargetMarkerTargets.get(token[offset] ?? "") ?? []) {
+    initials.add(target[0]!);
+  }
+  const variants: Array<readonly [string, string]> = [];
+  const seen = new Set<string>();
+  for (const initial of initials) {
+    for (const entry of semanticPropertyWordVariantsByInitial.get(initial) ?? []) {
+      const identity = `${entry[0]}\0${entry[1]}`;
+      if (!seen.has(identity)) {
+        seen.add(identity);
+        variants.push(entry);
+      }
+    }
+  }
+  return variants;
+}
+
+function tokenVariantMatchEnds(token: string, variant: string, offset: number): number[] {
+  const memo = new Map<string, readonly number[]>();
+
+  function visit(tokenOffset: number, variantOffset: number): readonly number[] {
+    if (variantOffset === variant.length) return [tokenOffset];
+    if (tokenOffset >= token.length) return [];
+    const memoKey = `${tokenOffset}:${variantOffset}`;
+    const cached = memo.get(memoKey);
+    if (cached) return cached;
+    const ends = new Set<number>();
+    const character = token[tokenOffset];
+    if (character === MIXED_SCRIPT_CLASSIFICATION_WILDCARD) {
+      for (const end of visit(tokenOffset + 1, variantOffset + 1)) ends.add(end);
+    } else if (confusableTargetMarkerTargets.has(character ?? "")) {
+      for (const target of confusableTargetMarkerTargets.get(character!)!) {
+        if (!variant.startsWith(target, variantOffset)) continue;
+        for (const end of visit(tokenOffset + 1, variantOffset + target.length)) ends.add(end);
+      }
+    } else if (character === variant[variantOffset]) {
+      for (const end of visit(tokenOffset + 1, variantOffset + 1)) ends.add(end);
+    }
+    for (const [source, target] of normalizationAliasesAt(token, tokenOffset)) {
+      if (!variant.startsWith(target, variantOffset)) continue;
+      for (const end of visit(tokenOffset + source.length, variantOffset + target.length)) ends.add(end);
+    }
+    const result = Object.freeze([...ends]);
+    memo.set(memoKey, result);
+    return result;
+  }
+
+  return [...visit(offset, 0)];
 }
 
 function segmentCompactPropertyToken(token: string): string[] | null {
+  if (segmentCompactPropertyTokenCache.has(token)) {
+    const cached = segmentCompactPropertyTokenCache.get(token)!;
+    return cached ? [...cached] : null;
+  }
   const memo = new Map<number, string[] | null>();
 
   function visit(offset: number): string[] | null {
@@ -280,12 +491,13 @@ function segmentCompactPropertyToken(token: string): string[] | null {
     if (memo.has(offset)) return memo.get(offset)!;
 
     for (const [variant, canonical] of semanticVariantsAt(token, offset)) {
-      if (!tokenMatchesVariantAt(token, variant, offset)) continue;
-      const remainder = visit(offset + variant.length);
-      if (remainder) {
-        const result = [canonical, ...remainder];
-        memo.set(offset, result);
-        return result;
+      for (const matchEnd of tokenVariantMatchEnds(token, variant, offset)) {
+        const remainder = visit(matchEnd);
+        if (remainder) {
+          const result = [canonical, ...remainder];
+          memo.set(offset, result);
+          return result;
+        }
       }
     }
 
@@ -293,7 +505,13 @@ function segmentCompactPropertyToken(token: string): string[] | null {
     return null;
   }
 
-  return visit(0);
+  const result = visit(0);
+  setBoundedCache(
+    segmentCompactPropertyTokenCache,
+    token,
+    result ? Object.freeze([...result]) : null,
+  );
+  return result ? [...result] : null;
 }
 
 interface SemanticPropertyRun {
@@ -322,17 +540,17 @@ function semanticPropertyRuns(token: string): SemanticPropertyRun[] {
     let best: Omit<SemanticPropertyRun, "start"> | null = null;
 
     for (const [variant, canonical] of semanticVariantsAt(token, offset)) {
-      if (!tokenMatchesVariantAt(token, variant, offset)) continue;
-      const nextOffset = offset + variant.length;
-      const remainder = longestRunFrom(nextOffset);
-      const candidate = {
-        end: remainder?.end ?? nextOffset,
-        tokens: [canonical, ...(remainder?.tokens ?? [])],
-      };
-      if (!best
-        || candidate.end > best.end
-        || (candidate.end === best.end && candidate.tokens.length > best.tokens.length)) {
-        best = candidate;
+      for (const nextOffset of tokenVariantMatchEnds(token, variant, offset)) {
+        const remainder = longestRunFrom(nextOffset);
+        const candidate = {
+          end: remainder?.end ?? nextOffset,
+          tokens: [canonical, ...(remainder?.tokens ?? [])],
+        };
+        if (!best
+          || candidate.end > best.end
+          || (candidate.end === best.end && candidate.tokens.length > best.tokens.length)) {
+          best = candidate;
+        }
       }
     }
 
@@ -357,8 +575,12 @@ function semanticPropertyRuns(token: string): SemanticPropertyRun[] {
 }
 
 function canonicalPropertyKeyTokens(key: string): string[] {
-  return propertyKeyTokens(key).flatMap((token) =>
-    segmentCompactPropertyToken(token) ?? [canonicalPropertyToken(token)]);
+  const cached = canonicalPropertyKeyTokensCache.get(key);
+  if (cached) return [...cached];
+  const tokens = [...new Set(propertyKeyTokens(key).flatMap((token) =>
+    segmentCompactPropertyToken(token) ?? [canonicalPropertyToken(token)]))];
+  setBoundedCache(canonicalPropertyKeyTokensCache, key, Object.freeze(tokens));
+  return [...tokens];
 }
 
 const safeNumericIdentifierTokens = new Set([
@@ -375,6 +597,15 @@ const safeNumericIdentifierTokens = new Set([
 ]);
 
 function hasSafeNumericLeafSemantic(key: string): boolean {
+  const identityLeaf = identityPropertyKeyTokens(key).at(-1);
+  if (identityLeaf) {
+    const identityExact = segmentCompactPropertyToken(identityLeaf) ?? [canonicalPropertyToken(identityLeaf)];
+    if (safeNumericIdentifierTokens.has(identityExact.at(-1)!)) return true;
+    if (semanticPropertyRuns(identityLeaf).some((run) =>
+      run.end === identityLeaf.length
+        && run.tokens.length > 1
+        && safeNumericIdentifierTokens.has(run.tokens.at(-1)!))) return true;
+  }
   const rawTokens = propertyKeyTokens(key);
   const leaf = rawTokens.at(-1);
   if (!leaf) return false;
@@ -742,6 +973,17 @@ function isSafeNonPersonNameSemantic(tokens: string[]): boolean {
 function hasExplicitSafeNonPersonNameSemantic(key: string, exactTerms: string[]): boolean {
   if (exactTerms.some((_, index) => isSafeNonPersonNameSemantic(exactTerms.slice(index)))) return true;
   return propertyKeyTokens(key).some((rawToken) => semanticPropertyRuns(rawToken).some((run) =>
+    run.start === 0
+      && run.end === rawToken.length
+      && isSafeNonPersonNameSemantic([...run.tokens])));
+}
+
+function hasExplicitSafeNonPersonIdentityNameSemantic(key: string): boolean {
+  const rawTokens = identityPropertyKeyTokens(key);
+  if (rawTokens.some((token) => /[?\uE000-\uF8FF]/.test(token))) return false;
+  const exactTerms = identityCanonicalPropertyKeyTokens(key);
+  if (exactTerms.some((_, index) => isSafeNonPersonNameSemantic(exactTerms.slice(index)))) return true;
+  return rawTokens.some((rawToken) => semanticPropertyRuns(rawToken).some((run) =>
     run.end === rawToken.length && isSafeNonPersonNameSemantic([...run.tokens])));
 }
 
@@ -769,11 +1011,12 @@ function compactHasPersonalContext(value: string): boolean {
     for (const word of personalContextContainerWords) {
       const variants = [word, `${word}s`];
       for (const variant of variants) {
-        if (!tokenMatchesVariantAt(remaining, variant, 0)) continue;
-        const isPersonal = personalNameContextTokens.has(canonicalPersonalContextToken(word));
-        if (visit(remaining.slice(variant.length), foundPersonalContext || isPersonal)) {
-          memo.set(memoKey, true);
-          return true;
+        for (const matchEnd of tokenVariantMatchEnds(remaining, variant, 0)) {
+          const isPersonal = personalNameContextTokens.has(canonicalPersonalContextToken(word));
+          if (visit(remaining.slice(matchEnd), foundPersonalContext || isPersonal)) {
+            memo.set(memoKey, true);
+            return true;
+          }
         }
       }
     }
@@ -798,9 +1041,13 @@ function blockedHumanNameKey(key: string, path: Array<string | number>): boolean
   const exactTerms = canonicalPropertyKeyTokens(key);
   const terms = recognizedRiskSemanticKeyTokens(key);
   const compact = singularNameKeyCompact(key);
+  const identityCompact = identityCanonicalPropertyKeyTokens(key).join("");
+  if (safeNonPersonNameKeys.has(identityCompact)) return false;
+  if (!hasPersonalContextToken(terms) && hasExplicitSafeNonPersonIdentityNameSemantic(key)) return false;
   if (safeNonPersonNameKeys.has(compact)) return false;
   if (!hasPersonalContextToken(terms) && hasExplicitSafeNonPersonNameSemantic(key, exactTerms)) return false;
   if (directHumanNameKeys.has(compact)) return true;
+  if (terms.some((term) => directHumanNameKeys.has(term))) return true;
   const rawLeaf = propertyKeyTokens(key).at(-1);
   const hasNameSemantic = terms.includes("name")
     || terms.some((term) => ["forename", "surname"].includes(term));
@@ -817,17 +1064,28 @@ function blockedHumanNameKey(key: string, path: Array<string | number>): boolean
 function blockedPropertyKey(key: string, path: Array<string | number> = []): boolean {
   const tokens = canonicalPropertyKeyTokens(key);
   const recognizedTokens = recognizedRiskSemanticKeyTokens(key);
+  const identityTokens = identityCanonicalPropertyKeyTokens(key);
+  const identityRecognizedTokens = [...new Set([
+    ...identityTokens,
+    ...identityPropertyKeyTokens(key).flatMap(recognizedHighRiskRunTokens),
+  ])];
   const normalized = tokens.join("_");
   const compact = tokens.join("");
   if (hasSafeNumericLeafSemantic(key)) return false;
   if (/(?:^|_)e_mail(?:_|$)/.test(normalized)) return true;
   if (recognizedTokens.some((token) => ["email", "address", "street", "zip"].includes(token))) return true;
+  if (identityRecognizedTokens.some((token) => directPhoneSemanticTokens.has(token))
+    && isExplicitSafePhoneContext(identityRecognizedTokens)) return false;
   if (recognizedTokens.some((token) => directPhoneSemanticTokens.has(token))
     && !isExplicitSafePhoneContext(recognizedTokens)) return true;
   if (["contactnumber", "mobilenumber", "telephonenumber", "cellphonenumber"].includes(compact)) return true;
   if (blockedHumanNameKey(key, path)) return true;
   if (/(?:^|_)postal_code(?:_|$)/.test(normalized)) return true;
   if (/(?:^|_)user_agent(?:_|$)/.test(normalized)) return true;
+  if (recognizedTokens.includes("ip")
+    && recognizedTokens.some((token) => ["client", "remote", "source", "user", "visitor"].includes(token))) {
+    return true;
+  }
   if (normalized === "ip" || /(?:^|_)(?:client|remote|source|user|visitor)_ip(?:_|$)/.test(normalized)) return true;
   return /(?:^|_)ip_address(?:_|$)/.test(normalized);
 }
@@ -909,6 +1167,58 @@ function containsIpAddress(value: string): boolean {
   });
 }
 
+const MAX_PROPERTY_CLASSIFICATION_KEYS = 200;
+const MAX_PROPERTY_CLASSIFICATION_CODE_POINTS = 4_096;
+const MAX_PROPERTY_CLASSIFICATION_WORK = 20_000;
+const WILDCARD_CLASSIFICATION_WORK = 1_024;
+const NORMALIZATION_ALIAS_CLASSIFICATION_WORK = 16;
+const TARGET_ALTERNATIVE_CLASSIFICATION_WORK = 2_048;
+
+interface PropertyClassificationBudget {
+  keys: number;
+  codePoints: number;
+  work: number;
+  exceeded: boolean;
+}
+
+function consumePropertyClassificationKey(key: string, state: PropertyClassificationBudget): void {
+  if (state.exceeded) return;
+  const classified = classificationPropertyKey(key);
+  let wildcardCount = 0;
+  let normalizationAliasCount = 0;
+  let targetAlternativeCount = 0;
+  for (let offset = 0; offset < classified.length; offset += 1) {
+    if (classified[offset] === MIXED_SCRIPT_CLASSIFICATION_WILDCARD) wildcardCount += 1;
+    normalizationAliasCount += normalizationAliasesAt(classified, offset).length;
+    targetAlternativeCount += confusableTargetMarkerTargets.get(classified[offset] ?? "")?.length ?? 0;
+  }
+  state.keys += 1;
+  state.codePoints += [...key].length;
+  state.work += [...classified].length
+    + wildcardCount * WILDCARD_CLASSIFICATION_WORK
+    + normalizationAliasCount * NORMALIZATION_ALIAS_CLASSIFICATION_WORK
+    + targetAlternativeCount * TARGET_ALTERNATIVE_CLASSIFICATION_WORK;
+  state.exceeded = state.keys > MAX_PROPERTY_CLASSIFICATION_KEYS
+    || state.codePoints > MAX_PROPERTY_CLASSIFICATION_CODE_POINTS
+    || state.work > MAX_PROPERTY_CLASSIFICATION_WORK;
+}
+
+function measureNestedPropertyClassification(
+  value: PropertyValue,
+  state: PropertyClassificationBudget,
+): void {
+  if (state.exceeded || value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) measureNestedPropertyClassification(item, state);
+    return;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    consumePropertyClassificationKey(key, state);
+    measureNestedPropertyClassification(item, state);
+    if (state.exceeded) return;
+  }
+}
+
 function inspectPropertyValue(
   value: PropertyValue,
   path: Array<string | number>,
@@ -978,6 +1288,25 @@ export const pixelEventSchema = z.object({
   const entries = Object.entries(event.properties ?? {});
   if (entries.length > 50) {
     context.addIssue({ code: "custom", message: "properties may contain at most 50 keys", path: ["properties"] });
+  }
+  const classificationBudget: PropertyClassificationBudget = {
+    keys: 0,
+    codePoints: 0,
+    work: 0,
+    exceeded: false,
+  };
+  for (const [key, value] of entries) {
+    consumePropertyClassificationKey(key, classificationBudget);
+    measureNestedPropertyClassification(value, classificationBudget);
+    if (classificationBudget.exceeded) break;
+  }
+  if (classificationBudget.exceeded) {
+    context.addIssue({
+      code: "custom",
+      message: "properties exceed the bounded classification work budget",
+      path: ["properties"],
+    });
+    return;
   }
   const state = { nodes: 0, overLimit: false };
   for (const [key, value] of entries) {

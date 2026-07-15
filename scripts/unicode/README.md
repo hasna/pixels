@@ -20,6 +20,13 @@ a pure multilingual identifier into a mixed-script key. Remaining non-ASCII
 letters in such a word become a bounded single-code-point wildcard during
 sensitive semantic classification; emitted keys are never changed.
 
+The generated output also contains the small deterministic set of wholly ASCII
+normalization aliases whose compatibility form differs from the official
+skeleton target (for example, U+2161 normalizes to `II` but maps to `ll`). The
+runtime applies an original code-point mapping before compatibility
+normalization, then consults these aliases only while matching bounded semantic
+property terms. It does not globally rewrite ordinary ASCII keys.
+
 To update:
 
 1. Review the new UTS #39 release and Unicode license.
