@@ -76,6 +76,25 @@ describe("browser dispatcher", () => {
     ]);
   });
 
+  test("rejects compact PII before the browser can bootstrap or dispatch Google Analytics", async () => {
+    const { environment, globals, scripts } = fakeEnvironment();
+    environment.navigator.doNotTrack = "0";
+    environment.navigator.globalPrivacyControl = false;
+    const client = new BrowserPixelClient({
+      environment,
+      policy: { enabled: true, allowedProviders: ["google-analytics"] },
+      providers: [{ provider: "google-analytics", enabled: true, measurementId: "G-ABC12345" }],
+    });
+
+    await expect(client.track({
+      name: "lead",
+      properties: { primarycustomername: "Ada Lovelace" },
+    }, { analytics: true, advertising: false })).rejects.toThrow();
+    expect(scripts).toHaveLength(0);
+    expect(globals["gtag"]).toBeUndefined();
+    expect(globals["dataLayer"]).toBeUndefined();
+  });
+
   test("scopes Google Analytics events when two properties share gtag", async () => {
     const { environment, globals } = fakeEnvironment();
     const first = new BrowserPixelDispatcher(environment);

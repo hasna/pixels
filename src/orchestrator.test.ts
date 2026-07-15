@@ -304,6 +304,172 @@ describe("evaluatePixelEvent", () => {
     }
   });
 
+  test("rejects compact personal semantics surrounded by bounded modifier spans", () => {
+    const modifiers = [
+      "primary", "billing", "emergency", "shipping", "alternate", "preferred", "secondary",
+      "qzx", "neutralx",
+    ];
+    const hostileSemantics = [
+      ["contact", "phone"],
+      ["contact", "number"],
+      ["customer", "name"],
+      ["holder", "name"],
+    ];
+
+    for (const modifier of modifiers) {
+      for (const semantics of hostileSemantics) {
+        const keys = [
+          `${modifier}${semantics.join("")}`,
+          `${semantics.join("")}${modifier}`,
+          `${modifier}${semantics.join("")}tailx`,
+          `${modifier.toUpperCase()}${semantics.join("").toUpperCase()}`,
+        ];
+        for (const key of keys) {
+          expect(() => evaluatePixelEvent(request({
+            event: { name: "lead", properties: { [key]: 15551234567 } },
+          })), key).toThrow();
+        }
+      }
+    }
+  });
+
+  test("accepts every safe numeric leaf rendering beneath compact contact ancestry", () => {
+    const safeLeaves = [
+      "id", "identifier", "count", "counter", "index", "rank", "total", "amount", "price", "quantity",
+    ];
+    const plurals: Record<string, string> = {
+      id: "ids",
+      identifier: "identifiers",
+      count: "counts",
+      counter: "counters",
+      index: "indices",
+      rank: "ranks",
+      total: "totals",
+      amount: "amounts",
+      price: "prices",
+      quantity: "quantities",
+    };
+    const renderers = [
+      (leaf: string) => `contact${leaf}`,
+      (leaf: string) => `contact${plurals[leaf]}`,
+      (leaf: string) => `contact_${leaf}`,
+      (leaf: string) => `contact-${leaf}`,
+      (leaf: string) => `CONTACT${leaf.toUpperCase()}`,
+      (leaf: string) => `billingcontact${leaf}`,
+    ];
+
+    for (const leaf of safeLeaves) {
+      for (const render of renderers) {
+        const key = render(leaf);
+        expect(() => evaluatePixelEvent(request({
+          event: {
+            name: "page_view",
+            properties: { customercontacts: [{ [key]: 15551234567 }] },
+          },
+        })), key).not.toThrow();
+      }
+    }
+  });
+
+  test("keeps a generated modifier corpus fail-closed with a zero false-positive budget", () => {
+    const modifiers = [
+      "primary", "billing", "emergency", "shipping", "alternate", "preferred", "secondary",
+      "qzx", "neutralx",
+    ];
+    const renderers = [
+      (tokens: string[]) => tokens.join(""),
+      (tokens: string[]) => tokens.join("").toUpperCase(),
+      (tokens: string[]) => tokens[0] + tokens.slice(1).map((token) =>
+        token[0]!.toUpperCase() + token.slice(1)).join(""),
+      (tokens: string[]) => tokens.join("_"),
+      (tokens: string[]) => tokens.join("-"),
+      (tokens: string[]) => tokens.join("."),
+    ];
+    const hostileSemantics = [
+      ["contact", "phone"],
+      ["contact", "number"],
+      ["customer", "name"],
+      ["holder", "name"],
+      ["recipient", "full", "name"],
+      ["member", "mobile", "number"],
+    ];
+    const hostileKeys = new Set<string>();
+    for (const modifier of modifiers) {
+      for (const semantic of hostileSemantics) {
+        for (const tokens of [
+          [modifier, ...semantic],
+          [...semantic, modifier],
+          [modifier, ...semantic, "tailx"],
+        ]) {
+          for (const render of renderers) hostileKeys.add(render(tokens));
+        }
+      }
+    }
+    const missedHostileKeys = [...hostileKeys].filter((key) => {
+      try {
+        evaluatePixelEvent(request({ event: { name: "lead", properties: { [key]: 15551234567 } } }));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    expect(hostileKeys.size).toBeGreaterThanOrEqual(455);
+    expect(missedHostileKeys).toEqual([]);
+
+    const safeNumericLeaves = [
+      "id", "identifier", "count", "counter", "index", "rank", "total", "amount", "price", "quantity",
+    ];
+    const safeEntityNames = ["event", "product", "company", "organization", "campaign", "category", "file"];
+    const safeNameStructures = [
+      (entity: string) => [entity, "name"],
+      (entity: string) => [entity, "name", "label"],
+      (entity: string) => [entity, "name", "field"],
+      (entity: string) => [entity, "name", "description"],
+      (entity: string) => ["name", "of", entity],
+      (entity: string) => [entity, "metadata", "name"],
+      (entity: string) => [entity, "name", "value"],
+      (entity: string) => [entity, "name", "key"],
+      (entity: string) => [entity, "name", "attribute"],
+      (entity: string) => [entity, "name", "detail"],
+      (entity: string) => [entity, "name", "record"],
+    ];
+    const safeCases = new Map<string, Record<string, unknown>>();
+    for (const modifier of modifiers) {
+      for (const leaf of safeNumericLeaves) {
+        for (const render of renderers) {
+          const key = render([modifier, "contact", leaf]);
+          safeCases.set(key, { customercontacts: [{ [key]: 15551234567 }] });
+        }
+      }
+    }
+    for (const entity of safeEntityNames) {
+      for (const structure of safeNameStructures) {
+        for (const render of renderers) {
+          const key = render(structure(entity));
+          safeCases.set(key, { profile: { [key]: "Research Journal" } });
+        }
+      }
+      for (const modifier of modifiers) {
+        for (const render of renderers) {
+          const key = render([modifier, entity, "name"]);
+          safeCases.set(key, { profile: { [key]: "Research Journal" } });
+        }
+      }
+    }
+    const falsePositiveKeys = [...safeCases].flatMap(([key, properties]) => {
+      try {
+        evaluatePixelEvent(request({
+          event: { name: "page_view", properties: properties as EvaluationRequest["event"]["properties"] },
+        }));
+        return [];
+      } catch {
+        return [key];
+      }
+    });
+    expect(safeCases.size).toBeGreaterThanOrEqual(453);
+    expect(falsePositiveKeys).toEqual([]);
+  });
+
   test("accepts safe identifiers, dotted versions, and email-like non-address text", () => {
     expect(() => evaluatePixelEvent(request({
       event: {
@@ -350,6 +516,33 @@ describe("evaluatePixelEvent", () => {
         event: { name: "page_view", properties: properties as EvaluationRequest["event"]["properties"] },
       })), label).not.toThrow();
     }
+  });
+
+  test("does not mistake lexical suffix collisions for explicit safe numeric leaves", () => {
+    const collisions = ["paid", "valid", "rapid", "account", "encounter"];
+    for (const key of collisions) {
+      expect(() => evaluatePixelEvent(request({
+        event: {
+          name: "lead",
+          properties: { customercontacts: [{ [key]: 15551234567 }] },
+        },
+      })), key).toThrow();
+    }
+  });
+
+  test("keeps maximum-width semantic scanning within a bounded runtime", () => {
+    const properties = Object.fromEntries(Array.from({ length: 50 }, (_, index) => [
+      `informationmetadatarecorddetailgroupvalue${index}`,
+      index,
+    ]));
+    const input = request({
+      event: { name: "page_view", properties },
+      providers: [],
+    });
+    evaluatePixelEvent(input);
+    const startedAt = performance.now();
+    for (let iteration = 0; iteration < 50; iteration += 1) evaluatePixelEvent(input);
+    expect(performance.now() - startedAt).toBeLessThan(1_500);
   });
 
   test("rejects duplicate providers", () => {

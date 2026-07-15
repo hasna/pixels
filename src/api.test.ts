@@ -78,4 +78,27 @@ describe("pixels API", () => {
     }));
     expect(oversized.status).toBe(400);
   });
+
+  test("rejects compact PII before evaluation or authorized dispatch", async () => {
+    const hostilePayload = {
+      ...payload,
+      event: { name: "lead", properties: { billingcontactphone: 15551234567 } },
+    };
+    const evaluateResponse = await createPixelsHttpHandler()(new Request("http://local/v1/evaluate", {
+      method: "POST",
+      body: JSON.stringify(hostilePayload),
+    }));
+    expect(evaluateResponse.status).toBe(400);
+
+    let dispatches = 0;
+    const eventResponse = await createPixelsHttpHandler({
+      authorize: () => true,
+      dispatcher: { dispatch: () => { dispatches += 1; } },
+    })(new Request("http://local/v1/events", {
+      method: "POST",
+      body: JSON.stringify(hostilePayload),
+    }));
+    expect(eventResponse.status).toBe(400);
+    expect(dispatches).toBe(0);
+  });
 });

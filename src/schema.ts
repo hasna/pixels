@@ -75,6 +75,7 @@ const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
   ...canonicalPropertyTokens,
   address: "address",
   alias: "alias",
+  amount: "amount",
   attribute: "attribute",
   author: "author",
   campaign: "campaign",
@@ -91,6 +92,7 @@ const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
   description: "description",
   detail: "detail",
   display: "display",
+  domain: "domain",
   email: "email",
   event: "event",
   extension: "extension",
@@ -102,6 +104,8 @@ const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
   full: "full",
   given: "given",
   group: "group",
+  holder: "holder",
+  host: "host",
   id: "id",
   identifier: "identifier",
   index: "index",
@@ -165,6 +169,17 @@ const semanticPropertyWordVariants = Object.freeze(
     .sort(([left], [right]) => right.length - left.length),
 );
 
+const semanticPropertyWordVariantsByInitial = new Map<string, ReadonlyArray<readonly [string, string]>>();
+for (const entry of semanticPropertyWordVariants) {
+  const initial = entry[0][0]!;
+  const entries = semanticPropertyWordVariantsByInitial.get(initial) ?? [];
+  semanticPropertyWordVariantsByInitial.set(initial, [...entries, entry]);
+}
+
+function semanticVariantsAt(token: string, offset: number): ReadonlyArray<readonly [string, string]> {
+  return semanticPropertyWordVariantsByInitial.get(token[offset] ?? "") ?? [];
+}
+
 function segmentCompactPropertyToken(token: string): string[] | null {
   const memo = new Map<number, string[] | null>();
 
@@ -172,7 +187,7 @@ function segmentCompactPropertyToken(token: string): string[] | null {
     if (offset === token.length) return [];
     if (memo.has(offset)) return memo.get(offset)!;
 
-    for (const [variant, canonical] of semanticPropertyWordVariants) {
+    for (const [variant, canonical] of semanticVariantsAt(token, offset)) {
       if (!token.startsWith(variant, offset)) continue;
       const remainder = visit(offset + variant.length);
       if (remainder) {
@@ -187,6 +202,74 @@ function segmentCompactPropertyToken(token: string): string[] | null {
   }
 
   return visit(0);
+}
+
+interface SemanticPropertyRun {
+  readonly start: number;
+  readonly end: number;
+  readonly tokens: readonly string[];
+}
+
+const semanticPropertyRunCache = new Map<string, readonly SemanticPropertyRun[]>();
+const MAX_SEMANTIC_PROPERTY_RUN_CACHE = 512;
+
+/**
+ * Finds bounded runs of recognized semantic words inside a compact property
+ * token. Unknown spans are never recursively segmented: they only separate
+ * recognized runs. This keeps the classifier deterministic while making a
+ * compact rendering such as `billingcontactphone` decision-equivalent to its
+ * camel and separator forms.
+ */
+function semanticPropertyRuns(token: string): SemanticPropertyRun[] {
+  const cached = semanticPropertyRunCache.get(token);
+  if (cached) return [...cached];
+  const memo = new Map<number, Omit<SemanticPropertyRun, "start"> | null>();
+
+  function longestRunFrom(offset: number): Omit<SemanticPropertyRun, "start"> | null {
+    if (memo.has(offset)) return memo.get(offset)!;
+    let best: Omit<SemanticPropertyRun, "start"> | null = null;
+
+    for (const [variant, canonical] of semanticVariantsAt(token, offset)) {
+      if (!token.startsWith(variant, offset)) continue;
+      const nextOffset = offset + variant.length;
+      const remainder = longestRunFrom(nextOffset);
+      const candidate = {
+        end: remainder?.end ?? nextOffset,
+        tokens: [canonical, ...(remainder?.tokens ?? [])],
+      };
+      if (!best
+        || candidate.end > best.end
+        || (candidate.end === best.end && candidate.tokens.length > best.tokens.length)) {
+        best = candidate;
+      }
+    }
+
+    memo.set(offset, best);
+    return best;
+  }
+
+  const runs: SemanticPropertyRun[] = [];
+  for (let start = 0; start < token.length; start += 1) {
+    const run = longestRunFrom(start);
+    if (run) runs.push({ start, ...run });
+  }
+  if (semanticPropertyRunCache.size >= MAX_SEMANTIC_PROPERTY_RUN_CACHE) {
+    const oldest = semanticPropertyRunCache.keys().next().value;
+    if (oldest !== undefined) semanticPropertyRunCache.delete(oldest);
+  }
+  semanticPropertyRunCache.set(token, Object.freeze(runs.map((run) => Object.freeze({
+    ...run,
+    tokens: Object.freeze([...run.tokens]),
+  }))));
+  return runs;
+}
+
+function recognizedSemanticKeyTokens(key: string): string[] {
+  const tokens = propertyKeyTokens(key);
+  return [...new Set([
+    ...canonicalPropertyKeyTokens(key),
+    ...tokens.flatMap((token) => semanticPropertyRuns(token).flatMap((run) => run.tokens)),
+  ])];
 }
 
 function canonicalPropertyKeyTokens(key: string): string[] {
@@ -207,8 +290,16 @@ const safeNumericIdentifierTokens = new Set([
   "quantity",
 ]);
 
-function hasSafeNumericIdentifierToken(tokens: string[]): boolean {
-  return tokens.some((token) => safeNumericIdentifierTokens.has(token));
+function hasSafeNumericLeafSemantic(key: string): boolean {
+  const rawTokens = propertyKeyTokens(key);
+  const leaf = rawTokens.at(-1);
+  if (!leaf) return false;
+  const exact = segmentCompactPropertyToken(leaf) ?? [canonicalPropertyToken(leaf)];
+  if (safeNumericIdentifierTokens.has(exact.at(-1)!)) return true;
+  return semanticPropertyRuns(leaf).some((run) =>
+    run.end === leaf.length
+      && run.tokens.length > 1
+      && safeNumericIdentifierTokens.has(run.tokens.at(-1)!));
 }
 
 const directHumanNameKeys = new Set([
@@ -234,6 +325,7 @@ const personalNameContextTokens = new Set([
   "recipient",
   "author",
   "visitor",
+  "holder",
 ]);
 
 const personalContextContainerTokens = new Set([
@@ -259,6 +351,9 @@ const safeNonPersonNameKeys = new Set([
   "campaignname",
   "categoryname",
   "filename",
+  "hostname",
+  "domainname",
+  "authoritativename",
 ]);
 
 const safeNonPersonNameTokens = new Set([
@@ -269,6 +364,8 @@ const safeNonPersonNameTokens = new Set([
   "campaign",
   "category",
   "file",
+  "host",
+  "domain",
 ]);
 
 const safeNameStructureTokens = new Set([
@@ -311,6 +408,12 @@ function isSafeNonPersonNameSemantic(tokens: string[]): boolean {
   return tokens.includes("name")
     && tokens.some((token) => safeNonPersonNameTokens.has(token))
     && tokens.every((token) => safeNameStructureTokens.has(token));
+}
+
+function hasExplicitSafeNonPersonNameSemantic(key: string, exactTerms: string[]): boolean {
+  if (exactTerms.some((_, index) => isSafeNonPersonNameSemantic(exactTerms.slice(index)))) return true;
+  return propertyKeyTokens(key).some((rawToken) => semanticPropertyRuns(rawToken).some((run) =>
+    run.end === rawToken.length && isSafeNonPersonNameSemantic([...run.tokens])));
 }
 
 function canonicalPersonalContextToken(token: string): string {
@@ -363,9 +466,11 @@ function pathHasPersonalNameContext(path: Array<string | number>): boolean {
 }
 
 function blockedHumanNameKey(key: string, path: Array<string | number>): boolean {
-  const terms = canonicalPropertyKeyTokens(key);
+  const exactTerms = canonicalPropertyKeyTokens(key);
+  const terms = recognizedSemanticKeyTokens(key);
   const compact = singularNameKeyCompact(key);
-  if (safeNonPersonNameKeys.has(compact) || isSafeNonPersonNameSemantic(terms)) return false;
+  if (safeNonPersonNameKeys.has(compact)) return false;
+  if (!hasPersonalContextToken(terms) && hasExplicitSafeNonPersonNameSemantic(key, exactTerms)) return false;
   if (directHumanNameKeys.has(compact)) return true;
   const hasNameSemantic = compact.endsWith("name")
     || terms.includes("name")
@@ -374,16 +479,20 @@ function blockedHumanNameKey(key: string, path: Array<string | number>): boolean
 
   if (terms.some((term) => directHumanNameModifierTokens.has(term))) return true;
   if (hasPersonalContextToken(terms)) return true;
+  const rawLeaf = propertyKeyTokens(key).at(-1);
+  if (rawLeaf && semanticPropertyRuns(rawLeaf).some((run) =>
+    run.end === rawLeaf.length && run.tokens.at(-1) === "name")) return true;
   return pathHasPersonalNameContext(path);
 }
 
 function blockedPropertyKey(key: string, path: Array<string | number> = []): boolean {
   const tokens = canonicalPropertyKeyTokens(key);
+  const recognizedTokens = recognizedSemanticKeyTokens(key);
   const normalized = tokens.join("_");
   const compact = tokens.join("");
-  if (hasSafeNumericIdentifierToken(tokens)) return false;
+  if (hasSafeNumericLeafSemantic(key)) return false;
   if (/(?:^|_)e_mail(?:_|$)/.test(normalized)) return true;
-  if (tokens.some((token) => [
+  if (recognizedTokens.some((token) => [
     "email",
     "phone",
     "phonenumber",
@@ -403,8 +512,8 @@ function blockedPropertyKey(key: string, path: Array<string | number> = []): boo
 }
 
 function numericPhonePropertyKey(key: string): boolean {
-  const tokens = canonicalPropertyKeyTokens(key);
-  if (hasSafeNumericIdentifierToken(tokens)) return false;
+  const tokens = recognizedSemanticKeyTokens(key);
+  if (hasSafeNumericLeafSemantic(key)) return false;
   if (tokens.some((token) => [
     "phone",
     "phonenumber",
@@ -419,7 +528,7 @@ function numericPhonePropertyKey(key: string): boolean {
 }
 
 function safeNumericIdentifierKey(key: string): boolean {
-  return hasSafeNumericIdentifierToken(canonicalPropertyKeyTokens(key));
+  return hasSafeNumericLeafSemantic(key);
 }
 
 function hasNumericPhoneContext(path: Array<string | number>): boolean {
