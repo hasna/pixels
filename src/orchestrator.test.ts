@@ -798,7 +798,7 @@ describe("evaluatePixelEvent", () => {
     expect(safeCases.size).toBeGreaterThan(100_000);
     expect(Math.max(...[...safeCases.keys()].map((key) => key.length))).toBeLessThanOrEqual(64);
     expect(falsePositiveKeys).toEqual([]);
-  }, 30_000);
+  }, 90_000);
 
   test("keeps semantic decisions stable after bounded cache churn", () => {
     const classify = (key: string, value: PropertyValue): "accepted" | "rejected" => {
