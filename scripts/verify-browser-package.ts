@@ -4,6 +4,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -66,7 +67,13 @@ try {
   if (/node:(?:net|fs|path|url)|from\s*["'](?:net|fs|path|url)["']/.test(bundled)) {
     throw new Error("packed browser export contains a Node built-in import");
   }
-  console.log("packed browser export bundles with standard esbuild browser platform");
+  const bundleBytes = statSync(output).size;
+  // Exact pre-UTS39 PR baseline: 587446 bytes. The pinned table adds 4.7%;
+  // leave a narrow ceiling so future data or dependency growth is reviewed.
+  if (bundleBytes > 620_000) {
+    throw new Error(`packed browser export exceeds the 620000-byte safety budget: ${bundleBytes}`);
+  }
+  console.log(`packed browser export bundles with standard esbuild browser platform (${bundleBytes} bytes)`);
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });
 }

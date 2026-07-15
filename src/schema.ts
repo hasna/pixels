@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ASCII_CONFUSABLE_SKELETON_ENTRIES } from "./generated/unicode-confusables.js";
 import { PROVIDER_IDS } from "./types.js";
 import type { PropertyValue } from "./types.js";
 
@@ -27,49 +28,25 @@ function buildPropertyValueSchema(depth: number): z.ZodType<PropertyValue> {
 const propertyValue = buildPropertyValueSchema(4);
 const embeddedEmailValue = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}/i;
 
-const mixedScriptAsciiConfusables: Readonly<Record<string, string>> = Object.freeze({
-  // Greek characters commonly substituted into otherwise-Latin identifiers.
-  "α": "a",
-  "β": "b",
-  "ε": "e",
-  "ι": "i",
-  "κ": "k",
-  "ο": "o",
-  "ρ": "p",
-  "τ": "t",
-  "χ": "x",
-  // Latin characters that do not compatibility-decompose to their ASCII
-  // visual counterpart.
-  "ø": "o",
-  // Cyrillic characters commonly substituted into otherwise-Latin identifiers.
-  "а": "a",
-  "в": "b",
-  "е": "e",
-  "і": "i",
-  "ј": "j",
-  "к": "k",
-  "м": "m",
-  "н": "h",
-  "о": "o",
-  "р": "p",
-  "с": "c",
-  "т": "t",
-  "у": "y",
-  "х": "x",
-  "һ": "h",
-  "ӏ": "l",
-  "ѕ": "s",
-  // Armenian small now is visually close to a Latin n in mixed identifiers.
-  "ն": "n",
-});
+const asciiConfusableSkeletons = new Map<number, string>(ASCII_CONFUSABLE_SKELETON_ENTRIES);
+const MIXED_SCRIPT_CLASSIFICATION_WILDCARD = "?";
 
-function foldMixedScriptAsciiConfusables(value: string): string {
+function foldMixedScriptUnicodeSkeleton(value: string): string {
   return value.replace(/[\p{L}\p{N}]+/gu, (word) => {
+    // Pure non-ASCII words remain ordinary multilingual metadata. Inside an
+    // ASCII identifier word, apply the pinned UTS #39-derived table and treat
+    // any remaining non-ASCII letter/number as one bounded semantic wildcard.
+    // This makes the privacy boundary conservative without transliterating or
+    // mutating the original event key.
     if (!/[a-z]/i.test(word)) return word;
-    if (![...word].some((character) => mixedScriptAsciiConfusables[character] !== undefined)) {
-      return word;
-    }
-    return [...word].map((character) => mixedScriptAsciiConfusables[character] ?? character).join("");
+    return [...word].map((character) => {
+      if (/^[a-z0-9]$/i.test(character)) return character;
+      const skeleton = asciiConfusableSkeletons.get(character.codePointAt(0)!);
+      if (skeleton) return skeleton;
+      return /^[\p{L}\p{N}]$/u.test(character)
+        ? MIXED_SCRIPT_CLASSIFICATION_WILDCARD
+        : character;
+    }).join("");
   });
 }
 
@@ -80,18 +57,22 @@ function foldMixedScriptAsciiConfusables(value: string): string {
  * upper/lower expansion approximates Unicode default case folding. Letter case
  * is deliberately never treated as a trusted semantic boundary: adversarial
  * capitalization must classify exactly like compact lowercase spelling, while
- * stable punctuation still separates words. A bounded confusable skeleton is
- * applied only to words containing ASCII and an allowlisted lookalike, so
- * ordinary non-Latin metadata is not transliterated or blanket-rejected.
+ * stable punctuation still separates words. A pinned Unicode 17.0.0 UTS #39
+ * profile is applied only to words containing ASCII. Remaining non-ASCII
+ * letters/numbers in those mixed words are single-character semantic
+ * wildcards; ordinary non-Latin words are not transliterated or rejected.
  */
 function classificationPropertyKey(key: string): string {
   const decomposed = key.normalize("NFKD").replace(/\p{M}+/gu, "");
-  return foldMixedScriptAsciiConfusables(decomposed.toUpperCase().toLowerCase());
+  // UTS #39 mappings are code-point-specific. Apply the skeleton before case
+  // folding so a case pair cannot first collapse into a different confusable
+  // class (for example, Greek lunate sigma versus ordinary sigma).
+  return foldMixedScriptUnicodeSkeleton(decomposed).toUpperCase().toLowerCase();
 }
 
 function propertyKeyTokens(key: string): string[] {
   return classificationPropertyKey(key)
-    .split(/[^a-z0-9]+/)
+    .split(/[^a-z0-9?]+/)
     .filter(Boolean);
 }
 
@@ -278,7 +259,17 @@ for (const entry of semanticPropertyWordVariants) {
 }
 
 function semanticVariantsAt(token: string, offset: number): ReadonlyArray<readonly [string, string]> {
+  if (token[offset] === MIXED_SCRIPT_CLASSIFICATION_WILDCARD) return semanticPropertyWordVariants;
   return semanticPropertyWordVariantsByInitial.get(token[offset] ?? "") ?? [];
+}
+
+function tokenMatchesVariantAt(token: string, variant: string, offset: number): boolean {
+  if (offset + variant.length > token.length) return false;
+  for (let index = 0; index < variant.length; index += 1) {
+    const character = token[offset + index];
+    if (character !== MIXED_SCRIPT_CLASSIFICATION_WILDCARD && character !== variant[index]) return false;
+  }
+  return true;
 }
 
 function segmentCompactPropertyToken(token: string): string[] | null {
@@ -289,7 +280,7 @@ function segmentCompactPropertyToken(token: string): string[] | null {
     if (memo.has(offset)) return memo.get(offset)!;
 
     for (const [variant, canonical] of semanticVariantsAt(token, offset)) {
-      if (!token.startsWith(variant, offset)) continue;
+      if (!tokenMatchesVariantAt(token, variant, offset)) continue;
       const remainder = visit(offset + variant.length);
       if (remainder) {
         const result = [canonical, ...remainder];
@@ -331,7 +322,7 @@ function semanticPropertyRuns(token: string): SemanticPropertyRun[] {
     let best: Omit<SemanticPropertyRun, "start"> | null = null;
 
     for (const [variant, canonical] of semanticVariantsAt(token, offset)) {
-      if (!token.startsWith(variant, offset)) continue;
+      if (!tokenMatchesVariantAt(token, variant, offset)) continue;
       const nextOffset = offset + variant.length;
       const remainder = longestRunFrom(nextOffset);
       const candidate = {
@@ -778,7 +769,7 @@ function compactHasPersonalContext(value: string): boolean {
     for (const word of personalContextContainerWords) {
       const variants = [word, `${word}s`];
       for (const variant of variants) {
-        if (!remaining.startsWith(variant)) continue;
+        if (!tokenMatchesVariantAt(remaining, variant, 0)) continue;
         const isPersonal = personalNameContextTokens.has(canonicalPersonalContextToken(word));
         if (visit(remaining.slice(variant.length), foundPersonalContext || isPersonal)) {
           memo.set(memoKey, true);
