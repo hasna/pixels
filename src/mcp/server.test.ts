@@ -74,6 +74,10 @@ describe("pixels MCP contract", () => {
       for (const properties of [
         { cellularNumber: 15551234567 },
         { personalName: "Ada Lovelace" },
+        { phóne: 15551234567 },
+        { ["phóne".normalize("NFD")]: 15551234567 },
+        { phοne: 15551234567 },
+        { clíent_ip: "synthetic" },
       ]) {
         const semanticHostile = await client.callTool({
           name: "pixels_evaluate_event",
@@ -91,7 +95,15 @@ describe("pixels MCP contract", () => {
       const safeTelecomEntity = await client.callTool({
         name: "pixels_evaluate_event",
         arguments: {
-          event: { name: "page_view", properties: { safe0xCellularApp: "Dialer product" } },
+          event: {
+            name: "page_view",
+            properties: {
+              safe0xCellularApp: "Dialer product",
+              "région_du_réseau": "Europe",
+              "categoria_móvil": "actualités",
+              "équipe_cellulaire": "plateforme",
+            },
+          },
           consent: { analytics: true, advertising: false },
           policy: { enabled: true, allowedProviders: ["google-analytics"] },
           providers: [{ provider: "google-analytics", enabled: true, measurementId: "G-ABC12345" }],

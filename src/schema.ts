@@ -27,11 +27,62 @@ function buildPropertyValueSchema(depth: number): z.ZodType<PropertyValue> {
 const propertyValue = buildPropertyValueSchema(4);
 const embeddedEmailValue = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}/i;
 
+const mixedScriptAsciiConfusables: Readonly<Record<string, string>> = Object.freeze({
+  // Greek characters commonly substituted into otherwise-Latin identifiers.
+  "α": "a",
+  "β": "b",
+  "ε": "e",
+  "ι": "i",
+  "κ": "k",
+  "ο": "o",
+  "ρ": "p",
+  "τ": "t",
+  "χ": "x",
+  // Cyrillic characters commonly substituted into otherwise-Latin identifiers.
+  "а": "a",
+  "в": "b",
+  "е": "e",
+  "і": "i",
+  "ј": "j",
+  "к": "k",
+  "м": "m",
+  "н": "h",
+  "о": "o",
+  "р": "p",
+  "с": "c",
+  "т": "t",
+  "у": "y",
+  "х": "x",
+});
+
+function foldMixedScriptAsciiConfusables(value: string): string {
+  return value.replace(/[\p{L}\p{N}]+/gu, (word) => {
+    if (!/[a-z]/i.test(word)) return word;
+    if (![...word].some((character) => mixedScriptAsciiConfusables[character] !== undefined)) {
+      return word;
+    }
+    return [...word].map((character) => mixedScriptAsciiConfusables[character] ?? character).join("");
+  });
+}
+
+/**
+ * Produces a classification-only copy of a property key. The original key is
+ * retained in the event and in validation errors. Compatibility decomposition
+ * plus mark removal makes NFC/NFD and accented Latin renderings equivalent;
+ * upper/lower expansion approximates Unicode default case folding. A bounded
+ * confusable skeleton is applied only to mixed ASCII/Greek/Cyrillic words, so
+ * ordinary non-Latin metadata is not transliterated or blanket-rejected.
+ */
+function classificationPropertyKey(key: string): string {
+  const decomposed = key.normalize("NFKD").replace(/\p{M}+/gu, "");
+  const separated = decomposed
+    .replace(/(\p{Lu}+)(\p{Lu}\p{Ll})/gu, "$1_$2")
+    .replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1_$2");
+  return foldMixedScriptAsciiConfusables(separated.toUpperCase().toLowerCase());
+}
+
 function propertyKeyTokens(key: string): string[] {
-  return key
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .toLowerCase()
+  return classificationPropertyKey(key)
     .split(/[^a-z0-9]+/)
     .filter(Boolean);
 }

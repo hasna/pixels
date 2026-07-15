@@ -93,6 +93,79 @@ describe("evaluatePixelEvent", () => {
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { note: "call 15551234567 now" } } }))).toThrow();
   });
 
+  test("rejects Unicode-normalized and mixed-script variants of sensitive property keys", () => {
+    const sensitiveKeys = [
+      "phone",
+      "email",
+      "address",
+      "street",
+      "postal_code",
+      "zip",
+      "client_ip",
+      "cellular_value",
+      "cellular_number",
+    ];
+    const combiningMarks = ["\u0301", "\u0300", "\u0308", "\u0327"];
+    const hostileCases = new Map<string, PropertyValue>();
+    for (const key of sensitiveKeys) {
+      for (let index = 0; index < key.length; index += 1) {
+        if (!/[a-z]/.test(key[index]!)) continue;
+        for (const mark of combiningMarks) {
+          const marked = `${key.slice(0, index + 1)}${mark}${key.slice(index + 1)}`;
+          for (const variant of [
+            marked.normalize("NFC"),
+            marked.normalize("NFD"),
+            marked.toUpperCase().normalize("NFC"),
+            marked.toUpperCase().normalize("NFD"),
+          ]) {
+            hostileCases.set(variant, 15551234567);
+          }
+        }
+      }
+    }
+    for (const key of [
+      "phοne", // Greek omicron.
+      "рhone", // Cyrillic er.
+      "emаil", // Cyrillic a.
+      "addrеss", // Cyrillic ie.
+      "strеet",
+      "pοstal_code",
+      "zіp", // Cyrillic i.
+      "cliеnt_ip",
+      "сellular_value", // Cyrillic es.
+      "cellular_numвer", // Cyrillic ve.
+      "ｐｈｏｎｅ", // Fullwidth compatibility characters.
+      "𝐩𝐡𝐨𝐧𝐞", // Mathematical bold compatibility characters.
+    ]) hostileCases.set(key, 15551234567);
+
+    const missedHostileKeys: string[] = [];
+    for (const [key, value] of hostileCases) {
+      try {
+        evaluatePixelEvent(request({ event: { name: "lead", properties: { [key]: value } } }));
+        missedHostileKeys.push(key);
+      } catch {
+        // Expected: classification is Unicode-canonical and fails before dispatch.
+      }
+    }
+    expect(hostileCases.size).toBeGreaterThanOrEqual(500);
+    expect(missedHostileKeys).toEqual([]);
+
+    const safeInternationalMetadata: Record<string, PropertyValue> = {
+      "région_du_réseau": "Europe",
+      "categoria_móvil": "actualités",
+      "équipe_cellulaire": "plateforme",
+      "cellular_órganization": "Opérateur réseau",
+      "cellular_οrganization": "Opérateur réseau",
+      "сellular_app": "lector",
+      "móvil_aplicación": "lector",
+      "περιοχή_δικτύου": "Αθήνα",
+      "регион_сети": "София",
+    };
+    expect(() => evaluatePixelEvent(request({
+      event: { name: "page_view", properties: safeInternationalMetadata },
+    }))).not.toThrow();
+  });
+
   test("rejects plural PII ancestry across spelling, nesting, arrays, and scalar forms", () => {
     const blockedCases: Array<[string, Record<string, unknown>]> = [
       ["plural contacts numeric array", { contacts: [15551234567] }],
@@ -943,5 +1016,22 @@ describe("PixelOrchestrator", () => {
     });
     expect(result.dispatched).toEqual(["google-analytics"]);
     expect(result.failed).toEqual([{ provider: "meta", message: "test failure" }]);
+  });
+
+  test("rejects Unicode-sensitive keys before invoking a core dispatcher", async () => {
+    const orchestrator = new PixelOrchestrator({
+      policy: { enabled: true, allowedProviders: ["google-analytics"] },
+      providers: [ga],
+    });
+    let dispatches = 0;
+    for (const key of ["phóne", "phóne".normalize("NFD"), "phοne", "clíent_ip"]) {
+      await expect(orchestrator.dispatch({
+        event: { name: "lead", properties: { [key]: 15551234567 } },
+        consent: { analytics: true, advertising: false },
+      }, {
+        dispatch() { dispatches += 1; },
+      })).rejects.toThrow();
+    }
+    expect(dispatches).toBe(0);
   });
 });

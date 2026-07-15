@@ -91,6 +91,10 @@ describe("browser dispatcher", () => {
       { cellNumber: 15551234567 },
       { cellularNumber: 15551234567 },
       { personalName: "Ada Lovelace" },
+      { phóne: 15551234567 },
+      { ["phóne".normalize("NFD")]: 15551234567 },
+      { phοne: 15551234567 },
+      { clíent_ip: "synthetic" },
     ]) {
       await expect(client.track({
         name: "lead",
@@ -114,13 +118,20 @@ describe("browser dispatcher", () => {
 
     const result = await client.track({
       name: "page_view",
-      properties: { safe0xCellularApp: "Dialer product" },
+      properties: {
+        safe0xCellularApp: "Dialer product",
+        "région_du_réseau": "Europe",
+        "categoria_móvil": "actualités",
+        "équipe_cellulaire": "plateforme",
+      },
     }, { analytics: true, advertising: false });
 
     expect(result.evaluation.accepted).toBeTrue();
     expect(result.dispatched).toEqual(["google-analytics"]);
     expect(scripts).toHaveLength(1);
-    expect((globals["dataLayer"] as unknown[][]).some((entry) => entry[0] === "event")).toBeTrue();
+    const event = (globals["dataLayer"] as unknown[][]).find((entry) => entry[0] === "event");
+    expect(event).toBeDefined();
+    expect(event?.[2]).toMatchObject({ "région_du_réseau": "Europe" });
   });
 
   test("scopes Google Analytics events when two properties share gtag", async () => {

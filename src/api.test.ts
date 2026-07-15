@@ -86,6 +86,10 @@ describe("pixels API", () => {
       { cellNumber: 15551234567 },
       { cellularNumber: 15551234567 },
       { personalName: "Ada Lovelace" },
+      { phóne: 15551234567 },
+      { ["phóne".normalize("NFD")]: 15551234567 },
+      { phοne: 15551234567 },
+      { clíent_ip: "synthetic" },
     ]) {
       const hostilePayload = {
         ...payload,
@@ -113,7 +117,15 @@ describe("pixels API", () => {
     let dispatches = 0;
     const safePayload = {
       ...payload,
-      event: { name: "page_view", properties: { safe0x_cellular_app: "Dialer product" } },
+      event: {
+        name: "page_view",
+        properties: {
+          safe0x_cellular_app: "Dialer product",
+          "région_du_réseau": "Europe",
+          "categoria_móvil": "actualités",
+          "équipe_cellulaire": "plateforme",
+        },
+      },
     };
     const evaluateResponse = await createPixelsHttpHandler()(new Request("http://local/v1/evaluate", {
       method: "POST",

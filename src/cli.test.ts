@@ -18,6 +18,10 @@ describe("pixels CLI", () => {
       { cellNumber: 15551234567 },
       { cellularNumber: 15551234567 },
       { personalName: "Ada Lovelace" },
+      { phóne: 15551234567 },
+      { ["phóne".normalize("NFD")]: 15551234567 },
+      { phοne: 15551234567 },
+      { clíent_ip: "synthetic" },
     ]) {
       const directory = mkdtempSync(join(tmpdir(), "pixels-cli-test-"));
       temporaryDirectories.push(directory);
@@ -50,7 +54,15 @@ describe("pixels CLI", () => {
     temporaryDirectories.push(directory);
     const requestPath = join(directory, "request.json");
     writeFileSync(requestPath, JSON.stringify({
-      event: { name: "page_view", properties: { safe0x_cellular_app: "Dialer product" } },
+      event: {
+        name: "page_view",
+        properties: {
+          safe0x_cellular_app: "Dialer product",
+          "région_du_réseau": "Europe",
+          "categoria_móvil": "actualités",
+          "équipe_cellulaire": "plateforme",
+        },
+      },
       consent: { analytics: true, advertising: false },
       policy: { enabled: true, allowedProviders: ["google-analytics"] },
       providers: [{ provider: "google-analytics", enabled: true, measurementId: "G-ABC12345" }],
