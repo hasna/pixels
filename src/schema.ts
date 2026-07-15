@@ -42,6 +42,7 @@ const canonicalPropertyTokens: Readonly<Record<string, string>> = Object.freeze(
   addresses: "address",
   amounts: "amount",
   cells: "cell",
+  cellulars: "cellular",
   cellphones: "cellphone",
   contacts: "contact",
   contactnumbers: "contactnumber",
@@ -93,6 +94,7 @@ const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
   campaign: "campaign",
   category: "category",
   cell: "cell",
+  cellular: "cellular",
   cellphone: "cellphone",
   client: "client",
   code: "code",
@@ -428,6 +430,7 @@ const directHumanNameModifierTokens = new Set([
   "last",
   "legal",
   "maiden",
+  "personal",
   "preferred",
 ]);
 
@@ -453,6 +456,7 @@ const controlledSemanticModifierTokens = new Set([
 
 const directPhoneSemanticTokens = new Set([
   "cell",
+  "cellular",
   "cellphone",
   "mobile",
   "phone",
@@ -461,11 +465,50 @@ const directPhoneSemanticTokens = new Set([
   "telephone",
 ]);
 
+const safePhoneContextTokens = new Set([
+  "carrier",
+  "data",
+  "device",
+  "game",
+  "network",
+  "plan",
+  "platform",
+  "protocol",
+  "service",
+  "technology",
+]);
+
+const safePhoneContextModifierTokens = new Set([
+  "backup",
+  "business",
+  "default",
+  "primary",
+  "secondary",
+  "support",
+]);
+
+function canonicalSafePhoneContextToken(token: string): string {
+  if (token.endsWith("s") && safePhoneContextTokens.has(token.slice(0, -1))) {
+    return token.slice(0, -1);
+  }
+  return token;
+}
+
+function isExplicitSafePhoneContext(tokens: readonly string[]): boolean {
+  const canonical = tokens.map(canonicalSafePhoneContextToken);
+  return canonical.some((token) => directPhoneSemanticTokens.has(token))
+    && canonical.some((token) => safePhoneContextTokens.has(token))
+    && canonical.every((token) => directPhoneSemanticTokens.has(token)
+      || safePhoneContextTokens.has(token)
+      || safePhoneContextModifierTokens.has(token));
+}
+
 function isPhoneSemanticPhrase(tokens: readonly string[]): boolean {
   const hasPhone = tokens.some((token) => directPhoneSemanticTokens.has(token));
   if (tokens.includes("cell") && tokens.includes("number")) return true;
   if (tokens.includes("contact") && tokens.some((token) => [
     "cell",
+    "cellular",
     "cellphone",
     "mobile",
     "number",
@@ -655,19 +698,9 @@ function blockedPropertyKey(key: string, path: Array<string | number> = []): boo
   const compact = tokens.join("");
   if (hasSafeNumericLeafSemantic(key)) return false;
   if (/(?:^|_)e_mail(?:_|$)/.test(normalized)) return true;
-  if (recognizedTokens.some((token) => [
-    "email",
-    "phone",
-    "phonenumber",
-    "mobile",
-    "telephone",
-    "tel",
-    "cell",
-    "cellphone",
-    "address",
-    "street",
-    "zip",
-  ].includes(token))) return true;
+  if (recognizedTokens.some((token) => ["email", "address", "street", "zip"].includes(token))) return true;
+  if (recognizedTokens.some((token) => directPhoneSemanticTokens.has(token))
+    && !isExplicitSafePhoneContext(recognizedTokens)) return true;
   if (["contactnumber", "mobilenumber", "telephonenumber", "cellphonenumber"].includes(compact)) return true;
   if (blockedHumanNameKey(key, path)) return true;
   if (/(?:^|_)postal_code(?:_|$)/.test(normalized)) return true;
@@ -679,15 +712,7 @@ function blockedPropertyKey(key: string, path: Array<string | number> = []): boo
 function numericPhonePropertyKey(key: string): boolean {
   const tokens = recognizedRiskSemanticKeyTokens(key);
   if (hasSafeNumericLeafSemantic(key)) return false;
-  if (tokens.some((token) => [
-    "phone",
-    "phonenumber",
-    "mobile",
-    "telephone",
-    "tel",
-    "cell",
-    "cellphone",
-  ].includes(token))) {
+  if (tokens.some((token) => directPhoneSemanticTokens.has(token))) {
     return true;
   }
   return tokens.some((token) => ["contact", "contactnumber", "contactvalue"].includes(token));

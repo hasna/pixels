@@ -70,6 +70,23 @@ describe("pixels MCP contract", () => {
       expect(cellNumberHostile.isError).toBeTrue();
       expect(JSON.stringify(cellNumberHostile.content)).toContain("direct phone number");
       expect(cellNumberHostile.structuredContent).toBeUndefined();
+
+      for (const properties of [
+        { cellularNumber: 15551234567 },
+        { personalName: "Ada Lovelace" },
+      ]) {
+        const semanticHostile = await client.callTool({
+          name: "pixels_evaluate_event",
+          arguments: {
+            event: { name: "lead", properties },
+            consent: { analytics: true, advertising: false },
+            policy: { enabled: true, allowedProviders: ["google-analytics"] },
+            providers: [{ provider: "google-analytics", enabled: true, measurementId: "G-ABC12345" }],
+          },
+        });
+        expect(semanticHostile.isError).toBeTrue();
+        expect(semanticHostile.structuredContent).toBeUndefined();
+      }
     });
   });
 });

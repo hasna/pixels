@@ -89,6 +89,8 @@ describe("browser dispatcher", () => {
     for (const properties of [
       { primarycustomername: "Ada Lovelace" },
       { cellNumber: 15551234567 },
+      { cellularNumber: 15551234567 },
+      { personalName: "Ada Lovelace" },
     ]) {
       await expect(client.track({
         name: "lead",

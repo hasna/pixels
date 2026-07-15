@@ -366,6 +366,73 @@ describe("evaluatePixelEvent", () => {
     }
   });
 
+  test("rejects cellular phone fields and explicit personal-name contexts", () => {
+    const renderers = [
+      (tokens: string[]) => tokens.join(""),
+      (tokens: string[]) => tokens.join("").toUpperCase(),
+      (tokens: string[]) => tokens[0] + tokens.slice(1).map((token) =>
+        token[0]!.toUpperCase() + token.slice(1)).join(""),
+      (tokens: string[]) => tokens.join("_"),
+      (tokens: string[]) => tokens.join("-"),
+      (tokens: string[]) => tokens.join("."),
+    ];
+    const hostilePhrases = [
+      ["cellular", "number"], ["number", "cellular"],
+      ["cellular", "phone"], ["phone", "cellular"],
+      ["personal", "name"], ["name", "personal"],
+      ["personal", "surname"], ["surname", "personal"],
+    ];
+
+    for (const phrase of hostilePhrases) {
+      for (const render of renderers) {
+        const key = render(phrase);
+        expect(() => evaluatePixelEvent(request({
+          event: { name: "lead", properties: { [key]: 15551234567 } },
+        })), key).toThrow();
+      }
+    }
+  });
+
+  test("preserves explicit non-person cellular and mobile product contexts", () => {
+    const renderers = [
+      (tokens: string[]) => tokens.join(""),
+      (tokens: string[]) => tokens.join("").toUpperCase(),
+      (tokens: string[]) => tokens[0] + tokens.slice(1).map((token) =>
+        token[0]!.toUpperCase() + token.slice(1)).join(""),
+      (tokens: string[]) => tokens.join("_"),
+      (tokens: string[]) => tokens.join("-"),
+      (tokens: string[]) => tokens.join("."),
+    ];
+    const safePhrases = [
+      ["cellular", "network"], ["cellular", "networks"],
+      ["cellular", "data"], ["cellular", "plan"],
+      ["mobile", "game"], ["mobile", "platform"],
+      ["phone", "service"], ["telephone", "carrier"],
+    ];
+
+    for (const phrase of safePhrases) {
+      for (const render of renderers) {
+        const key = render(phrase);
+        expect(() => evaluatePixelEvent(request({
+          event: { name: "page_view", properties: { [key]: "ordinary non-person value" } },
+        })), key).not.toThrow();
+      }
+    }
+    expect(() => evaluatePixelEvent(request({
+      event: {
+        name: "page_view",
+        properties: {
+          primaryCellularNetwork: "5g",
+          personalProjectName: "Research Journal",
+          personal_project_name: "Research Journal",
+        },
+      },
+    }))).not.toThrow();
+    expect(() => evaluatePixelEvent(request({
+      event: { name: "lead", properties: { cellularNetwork: 15551234567 } },
+    }))).toThrow();
+  });
+
   test("rejects compact personal semantics surrounded by bounded modifier spans", () => {
     const modifiers = [
       "primary", "billing", "emergency", "shipping", "alternate", "preferred", "secondary",
@@ -532,7 +599,7 @@ describe("evaluatePixelEvent", () => {
     expect(falsePositiveKeys).toEqual([]);
   });
 
-  test("preserves a 150k hostile and 1.7k safe semantic boundary corpus", () => {
+  test("preserves a reviewer-scale hostile and safe semantic boundary corpus", () => {
     const renderers = [
       (tokens: string[]) => tokens.join(""),
       (tokens: string[]) => tokens.join("").toUpperCase(),
@@ -542,10 +609,14 @@ describe("evaluatePixelEvent", () => {
       (tokens: string[]) => tokens.join("-"),
       (tokens: string[]) => tokens.join("."),
     ];
+    const phoneRoots = ["cell", "cellular", "cellphone", "mobile", "phone", "tel", "telephone"];
     const hostilePhrases = [
-      ["contact", "phone"], ["phone", "contact"],
+      ...phoneRoots.flatMap((root) => [
+        [root, "number"], ["number", root],
+        [root, "contact"], ["contact", root],
+        [`${root}s`, "numbers"], ["numbers", `${root}s`],
+      ]),
       ["contact", "number"], ["number", "contact"],
-      ["cell", "number"], ["number", "cell"],
       ["customer", "name"], ["name", "customer"],
       ["holder", "name"], ["name", "holder"],
       ["recipient", "full", "name"], ["name", "of", "recipient"],
@@ -555,8 +626,11 @@ describe("evaluatePixelEvent", () => {
       ["person", "cell"], ["cell", "person"],
       ["display", "name"], ["name", "display"],
       ["profile", "mobile"], ["author", "telephone"],
+      ["personal", "name"], ["name", "personal"],
+      ["personal", "surname"], ["surname", "personal"],
+      ["personal", "names"], ["names", "personal"],
     ];
-    const prefixes = Array.from({ length: 36 }, (_, index) => `qx${index.toString(36)}z`);
+    const prefixes = Array.from({ length: 40 }, (_, index) => `qx${index.toString(36)}z`);
     const suffixes = Array.from({ length: 30 }, (_, index) => `vy${index.toString(36)}k`);
     const hostileKeys = new Set<string>();
     for (const phrase of hostilePhrases) {
@@ -585,13 +659,11 @@ describe("evaluatePixelEvent", () => {
         // Expected: the public schema rejects before any dispatch decision.
       }
     }
-    expect(hostileKeys.size).toBeGreaterThanOrEqual(149_770);
+    expect(hostileKeys.size).toBeGreaterThan(197_010);
+    expect(Math.max(...[...hostileKeys].map((key) => key.length))).toBeLessThanOrEqual(64);
     expect(missedHostileKeys).toEqual([]);
 
-    const modifiers = [
-      "primary", "billing", "emergency", "shipping", "alternate", "preferred",
-      "secondary", "qzx", "neutralx",
-    ];
+    const modifiers = Array.from({ length: 96 }, (_, index) => `safex${index.toString(36)}q`);
     const safeEntities = [
       "app", "application", "code", "event", "product", "company", "organization",
       "org", "campaign", "category", "file", "host", "domain", "project", "team",
@@ -653,7 +725,8 @@ describe("evaluatePixelEvent", () => {
         if (falsePositiveKeys.length < 20) falsePositiveKeys.push(key);
       }
     }
-    expect(safeCases.size).toBeGreaterThanOrEqual(1_716);
+    expect(safeCases.size).toBeGreaterThan(15_167);
+    expect(Math.max(...[...safeCases.keys()].map((key) => key.length))).toBeLessThanOrEqual(64);
     expect(falsePositiveKeys).toEqual([]);
   }, 30_000);
 

@@ -84,6 +84,8 @@ describe("pixels API", () => {
     for (const properties of [
       { billingcontactphone: 15551234567 },
       { cellNumber: 15551234567 },
+      { cellularNumber: 15551234567 },
+      { personalName: "Ada Lovelace" },
     ]) {
       const hostilePayload = {
         ...payload,
