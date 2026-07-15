@@ -87,6 +87,18 @@ describe("pixels MCP contract", () => {
         expect(semanticHostile.isError).toBeTrue();
         expect(semanticHostile.structuredContent).toBeUndefined();
       }
+
+      const safeTelecomEntity = await client.callTool({
+        name: "pixels_evaluate_event",
+        arguments: {
+          event: { name: "page_view", properties: { safe0xCellularApp: "Dialer product" } },
+          consent: { analytics: true, advertising: false },
+          policy: { enabled: true, allowedProviders: ["google-analytics"] },
+          providers: [{ provider: "google-analytics", enabled: true, measurementId: "G-ABC12345" }],
+        },
+      });
+      expect(safeTelecomEntity.isError).not.toBeTrue();
+      expect((safeTelecomEntity.structuredContent as { result?: { accepted?: boolean } }).result?.accepted).toBeTrue();
     });
   });
 });

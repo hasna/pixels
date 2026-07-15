@@ -108,4 +108,26 @@ describe("pixels API", () => {
     }
     expect(dispatches).toBe(0);
   });
+
+  test("accepts and dispatches safe non-person telecom entity metadata", async () => {
+    let dispatches = 0;
+    const safePayload = {
+      ...payload,
+      event: { name: "page_view", properties: { safe0x_cellular_app: "Dialer product" } },
+    };
+    const evaluateResponse = await createPixelsHttpHandler()(new Request("http://local/v1/evaluate", {
+      method: "POST",
+      body: JSON.stringify(safePayload),
+    }));
+    expect(evaluateResponse.status).toBe(200);
+    const eventResponse = await createPixelsHttpHandler({
+      authorize: () => true,
+      dispatcher: { dispatch: () => { dispatches += 1; } },
+    })(new Request("http://local/v1/events", {
+      method: "POST",
+      body: JSON.stringify(safePayload),
+    }));
+    expect(eventResponse.status).toBe(202);
+    expect(dispatches).toBe(1);
+  });
 });

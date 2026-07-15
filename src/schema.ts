@@ -89,9 +89,11 @@ const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
   attribute: "attribute",
   author: "author",
   backup: "backup",
+  band: "band",
   billing: "billing",
   business: "business",
   campaign: "campaign",
+  carrier: "carrier",
   category: "category",
   cell: "cell",
   cellular: "cellular",
@@ -144,6 +146,7 @@ const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
   main: "main",
   mobile: "mobile",
   name: "name",
+  network: "network",
   note: "note",
   number: "number",
   of: "of",
@@ -154,6 +157,7 @@ const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
   personal: "personal",
   phone: "phone",
   phonenumber: "phonenumber",
+  plan: "plan",
   postal: "postal",
   preferred: "preferred",
   price: "price",
@@ -161,20 +165,25 @@ const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
   product: "product",
   profile: "profile",
   project: "project",
+  protocol: "protocol",
+  provider: "provider",
   quantity: "quantity",
   rank: "rank",
   recipient: "recipient",
   record: "record",
   remote: "remote",
   secondary: "secondary",
+  service: "service",
   shipping: "shipping",
   source: "source",
+  standard: "standard",
   street: "street",
   support: "support",
   surname: "surname",
   team: "team",
   tel: "tel",
   telephone: "telephone",
+  technology: "technology",
   text: "text",
   total: "total",
   user: "user",
@@ -466,15 +475,32 @@ const directPhoneSemanticTokens = new Set([
 ]);
 
 const safePhoneContextTokens = new Set([
+  "app",
+  "application",
+  "band",
+  "campaign",
   "carrier",
+  "category",
+  "code",
+  "company",
   "data",
   "device",
+  "domain",
+  "event",
+  "file",
   "game",
+  "host",
   "network",
+  "organization",
   "plan",
   "platform",
+  "product",
   "protocol",
+  "provider",
+  "project",
   "service",
+  "standard",
+  "team",
   "technology",
 ]);
 
@@ -487,6 +513,19 @@ const safePhoneContextModifierTokens = new Set([
   "support",
 ]);
 
+const safePhoneEntityStructureTokens = new Set([
+  "attribute",
+  "description",
+  "detail",
+  "field",
+  "info",
+  "key",
+  "label",
+  "metadata",
+  "name",
+  "record",
+]);
+
 function canonicalSafePhoneContextToken(token: string): string {
   if (token.endsWith("s") && safePhoneContextTokens.has(token.slice(0, -1))) {
     return token.slice(0, -1);
@@ -494,13 +533,46 @@ function canonicalSafePhoneContextToken(token: string): string {
   return token;
 }
 
+const explicitPersonalOrDirectValueTokens = new Set([
+  ...personalNameContextTokens,
+  "address",
+  "contact",
+  "contactnumber",
+  "contactvalue",
+  "email",
+  "ip",
+  "mail",
+  "number",
+  "person",
+  "personal",
+  "postal",
+  "street",
+  "value",
+  "zip",
+]);
+
+function isBoundedUnknownEntityModifier(token: string): boolean {
+  return token.length > 0
+    && token.length <= MAX_UNKNOWN_SEMANTIC_MODIFIER_LENGTH
+    && /^[a-z0-9]+$/.test(token)
+    && semanticPropertyWords[token] === undefined;
+}
+
 function isExplicitSafePhoneContext(tokens: readonly string[]): boolean {
   const canonical = tokens.map(canonicalSafePhoneContextToken);
+  const unknownModifiers = canonical.filter(isBoundedUnknownEntityModifier);
   return canonical.some((token) => directPhoneSemanticTokens.has(token))
     && canonical.some((token) => safePhoneContextTokens.has(token))
+    && unknownModifiers.length <= 1
+    && !canonical.some((token) => explicitPersonalOrDirectValueTokens.has(
+      canonicalPersonalContextToken(token),
+    ))
     && canonical.every((token) => directPhoneSemanticTokens.has(token)
       || safePhoneContextTokens.has(token)
-      || safePhoneContextModifierTokens.has(token));
+      || safePhoneContextModifierTokens.has(token)
+      || controlledSemanticModifierTokens.has(token)
+      || safePhoneEntityStructureTokens.has(token)
+      || isBoundedUnknownEntityModifier(token));
 }
 
 function isPhoneSemanticPhrase(tokens: readonly string[]): boolean {

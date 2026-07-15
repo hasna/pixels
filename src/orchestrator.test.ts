@@ -408,6 +408,13 @@ describe("evaluatePixelEvent", () => {
       ["cellular", "data"], ["cellular", "plan"],
       ["mobile", "game"], ["mobile", "platform"],
       ["phone", "service"], ["telephone", "carrier"],
+      ["cellular", "organization"], ["cellular", "org"],
+      ["cellular", "app"], ["cellular", "code"],
+      ["cellular", "project"], ["cellular", "team"],
+      ["mobile", "organization"], ["phone", "provider"],
+      ["telephone", "standard"], ["tel", "protocol"],
+      ["cellphone", "band"], ["cell", "technology"],
+      ["cellular", "company"], ["mobile", "event"],
     ];
 
     for (const phrase of safePhrases) {
@@ -423,6 +430,11 @@ describe("evaluatePixelEvent", () => {
         name: "page_view",
         properties: {
           primaryCellularNetwork: "5g",
+          safe0xCellularOrganization: "Network operator",
+          safe0x_cellular_org: "Network operator",
+          "safe0x-cellular-app": "Dialer product",
+          "safe0x.cellular.project": "Network roadmap",
+          preferredCellularApp: "Dialer product",
           personalProjectName: "Research Journal",
           personal_project_name: "Research Journal",
         },
@@ -431,6 +443,40 @@ describe("evaluatePixelEvent", () => {
     expect(() => evaluatePixelEvent(request({
       event: { name: "lead", properties: { cellularNetwork: 15551234567 } },
     }))).toThrow();
+    for (const key of [
+      "cellularNumber",
+      "cellularAppNumber",
+      "contactCellularApp",
+      "personCellularOrganization",
+      "cellularOrganizationAddress",
+      "personalName",
+    ]) {
+      expect(() => evaluatePixelEvent(request({
+        event: { name: "lead", properties: { [key]: 15551234567 } },
+      })), key).toThrow();
+    }
+    const entityDescriptors = [
+      "org", "organization", "app", "application", "code", "company", "event", "project", "team",
+      "network", "provider", "carrier", "standard", "protocol", "band", "technology", "plan",
+      "product", "service", "campaign", "category", "file", "domain", "host",
+    ];
+    for (const descriptor of entityDescriptors) {
+      for (const phrase of [
+        ["contact", "cellular", descriptor],
+        ["person", "cellular", descriptor],
+        ["personal", "cellular", descriptor],
+        ["cellular", descriptor, "value"],
+        ["cellular", descriptor, "number"],
+        ["cellular", descriptor, "address"],
+      ]) {
+        for (const render of renderers) {
+          const key = render(phrase);
+          expect(() => evaluatePixelEvent(request({
+            event: { name: "lead", properties: { [key]: 15551234567 } },
+          })), key).toThrow();
+        }
+      }
+    }
   });
 
   test("rejects compact personal semantics surrounded by bounded modifier spans", () => {
@@ -630,8 +676,8 @@ describe("evaluatePixelEvent", () => {
       ["personal", "surname"], ["surname", "personal"],
       ["personal", "names"], ["names", "personal"],
     ];
-    const prefixes = Array.from({ length: 40 }, (_, index) => `qx${index.toString(36)}z`);
-    const suffixes = Array.from({ length: 30 }, (_, index) => `vy${index.toString(36)}k`);
+    const prefixes = Array.from({ length: 42 }, (_, index) => `qx${index.toString(36)}z`);
+    const suffixes = Array.from({ length: 32 }, (_, index) => `vy${index.toString(36)}k`);
     const hostileKeys = new Set<string>();
     for (const phrase of hostilePhrases) {
       for (const prefix of prefixes) {
@@ -659,7 +705,7 @@ describe("evaluatePixelEvent", () => {
         // Expected: the public schema rejects before any dispatch decision.
       }
     }
-    expect(hostileKeys.size).toBeGreaterThan(197_010);
+    expect(hostileKeys.size).toBeGreaterThan(518_400);
     expect(Math.max(...[...hostileKeys].map((key) => key.length))).toBeLessThanOrEqual(64);
     expect(missedHostileKeys).toEqual([]);
 
@@ -715,6 +761,30 @@ describe("evaluatePixelEvent", () => {
       }
     }
 
+    const telecomModifiers = Array.from({ length: 28 }, (_, index) => `entity${index.toString(36)}x`);
+    const telecomRoots = ["cell", "cellular", "cellphone", "mobile", "phone", "tel", "telephone"];
+    const entityDescriptors = [
+      "org", "organization", "app", "application", "code", "company", "event", "project", "team", "network",
+      "provider", "carrier", "standard", "protocol", "band", "technology", "plan", "product",
+      "service", "campaign", "category", "file", "domain", "host",
+    ];
+    for (const modifier of telecomModifiers) {
+      for (const root of telecomRoots) {
+        for (const descriptor of entityDescriptors) {
+          for (const tokens of [
+            [modifier, root, descriptor],
+            [root, modifier, descriptor],
+            [root, descriptor, modifier],
+            [modifier, root, descriptor, "name"],
+          ]) {
+            for (const render of renderers) {
+              safeCases.set(render(tokens), "ordinary non-person entity metadata");
+            }
+          }
+        }
+      }
+    }
+
     const falsePositiveKeys: string[] = [];
     for (const [key, value] of safeCases) {
       try {
@@ -725,7 +795,7 @@ describe("evaluatePixelEvent", () => {
         if (falsePositiveKeys.length < 20) falsePositiveKeys.push(key);
       }
     }
-    expect(safeCases.size).toBeGreaterThan(15_167);
+    expect(safeCases.size).toBeGreaterThan(100_000);
     expect(Math.max(...[...safeCases.keys()].map((key) => key.length))).toBeLessThanOrEqual(64);
     expect(falsePositiveKeys).toEqual([]);
   }, 30_000);

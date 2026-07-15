@@ -44,4 +44,30 @@ describe("pixels CLI", () => {
       expect(stderr).toContain("direct personal information");
     }
   });
+
+  test("accepts safe non-person telecom entity metadata", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pixels-cli-safe-test-"));
+    temporaryDirectories.push(directory);
+    const requestPath = join(directory, "request.json");
+    writeFileSync(requestPath, JSON.stringify({
+      event: { name: "page_view", properties: { safe0x_cellular_app: "Dialer product" } },
+      consent: { analytics: true, advertising: false },
+      policy: { enabled: true, allowedProviders: ["google-analytics"] },
+      providers: [{ provider: "google-analytics", enabled: true, measurementId: "G-ABC12345" }],
+    }));
+
+    const subprocess = Bun.spawn([process.execPath, "run", "src/cli.ts", "evaluate", requestPath], {
+      cwd: import.meta.dir + "/..",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      subprocess.exited,
+      new Response(subprocess.stdout).text(),
+      new Response(subprocess.stderr).text(),
+    ]);
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout).result.accepted).toBeTrue();
+    expect(stderr).toBe("");
+  });
 });

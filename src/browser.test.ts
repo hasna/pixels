@@ -102,6 +102,27 @@ describe("browser dispatcher", () => {
     expect(globals["dataLayer"]).toBeUndefined();
   });
 
+  test("dispatches safe non-person telecom entity metadata", async () => {
+    const { environment, globals, scripts } = fakeEnvironment();
+    environment.navigator.doNotTrack = "0";
+    environment.navigator.globalPrivacyControl = false;
+    const client = new BrowserPixelClient({
+      environment,
+      policy: { enabled: true, allowedProviders: ["google-analytics"] },
+      providers: [{ provider: "google-analytics", enabled: true, measurementId: "G-ABC12345" }],
+    });
+
+    const result = await client.track({
+      name: "page_view",
+      properties: { safe0xCellularApp: "Dialer product" },
+    }, { analytics: true, advertising: false });
+
+    expect(result.evaluation.accepted).toBeTrue();
+    expect(result.dispatched).toEqual(["google-analytics"]);
+    expect(scripts).toHaveLength(1);
+    expect((globals["dataLayer"] as unknown[][]).some((entry) => entry[0] === "event")).toBeTrue();
+  });
+
   test("scopes Google Analytics events when two properties share gtag", async () => {
     const { environment, globals } = fakeEnvironment();
     const first = new BrowserPixelDispatcher(environment);
