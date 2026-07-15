@@ -85,6 +85,35 @@ describe("evaluatePixelEvent", () => {
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { note: "call 15551234567 now" } } }))).toThrow();
   });
 
+  test("rejects plural PII ancestry across spelling, nesting, arrays, and scalar forms", () => {
+    const blockedCases: Array<[string, Record<string, unknown>]> = [
+      ["plural contacts numeric array", { contacts: [15551234567] }],
+      ["plural contacts string array", { contacts: ["15551234567"] }],
+      ["uppercase plural contacts", { CONTACTS: [15551234567] }],
+      ["nested plural contacts", { profile: { contacts: [15551234567] } }],
+      ["plural container array ancestry", { profiles: [{ contacts: ["15551234567"] }] }],
+      ["separator contact ancestry", { "contact-groups": [{ values: [15551234567] }] }],
+      ["camel phone numbers", { phoneNumbers: [15551234567] }],
+      ["separator phone numbers", { phone_numbers: ["15551234567"] }],
+      ["compact plural phone numbers", { phonenumbers: [15551234567] }],
+      ["contact number key", { contactNumbers: "redacted" }],
+      ["compact contact values numeric array", { contactvalues: [15551234567] }],
+      ["compact contact values string array", { contactvalues: ["15551234567"] }],
+      ["compact plural first names", { firstnames: "Ada" }],
+      ["compact plural last names", { lastnames: "L" }],
+      ["compact plural full names", { fullnames: "Ada L" }],
+      ["uppercase compact plural names", { FIRSTNAMES: "Ada" }],
+      ["separator plural names", { "first-names": "Ada" }],
+      ["snake plural names", { last_names: "L" }],
+    ];
+
+    for (const [label, properties] of blockedCases) {
+      expect(() => evaluatePixelEvent(request({
+        event: { name: "lead", properties: properties as EvaluationRequest["event"]["properties"] },
+      })), label).toThrow();
+    }
+  });
+
   test("accepts safe identifiers, dotted versions, and email-like non-address text", () => {
     expect(() => evaluatePixelEvent(request({
       event: {
@@ -106,6 +135,31 @@ describe("evaluatePixelEvent", () => {
         },
       },
     }))).not.toThrow();
+  });
+
+  test("does not treat plural safe identifiers, counters, amounts, or ordinary contact text as PII", () => {
+    const safeCases: Array<[string, Record<string, unknown>]> = [
+      ["ordinary contacts", { contacts: ["support team", "wholesale desk"] }],
+      ["plural order ids", { orderIds: [15551234567, "15551234567"] }],
+      ["snake plural order ids", { order_ids: [15551234567, "15551234567"] }],
+      ["plural amounts", { amounts: [15551234567, "15551234567"] }],
+      ["plural counters", { counters: [15551234567, "15551234567"] }],
+      ["plural counts", { counts: [15551234567, "15551234567"] }],
+      ["contact count", { contactCount: 15551234567 }],
+      ["phone count", { phoneCount: 15551234567 }],
+      ["email count", { emailCount: 15551234567 }],
+      ["name counter", { nameCounter: 15551234567 }],
+      ["nested safe leaf overrides contact ancestry", {
+        contacts: [{ orderId: 15551234567, amount: 15551234567, counter: 15551234567 }],
+      }],
+      ["ordinary non-PII strings", { campaign: "summer-2026", note: "contact the support team" }],
+    ];
+
+    for (const [label, properties] of safeCases) {
+      expect(() => evaluatePixelEvent(request({
+        event: { name: "page_view", properties: properties as EvaluationRequest["event"]["properties"] },
+      })), label).not.toThrow();
+    }
   });
 
   test("rejects duplicate providers", () => {

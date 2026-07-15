@@ -36,19 +36,79 @@ function propertyKeyTokens(key: string): string[] {
     .filter(Boolean);
 }
 
-function singularPropertyToken(token: string): string {
-  if (["phones", "mobiles", "telephones", "addresses", "names", "emails"].includes(token)) {
-    return token.slice(0, -1);
-  }
-  return token;
+const canonicalPropertyTokens: Readonly<Record<string, string>> = Object.freeze({
+  addresses: "address",
+  amounts: "amount",
+  cellphones: "cellphone",
+  contacts: "contact",
+  contactnumbers: "contactnumber",
+  contactvalues: "contactvalue",
+  counts: "count",
+  counters: "counter",
+  emails: "email",
+  firstnames: "firstname",
+  fullnames: "fullname",
+  identifiers: "identifier",
+  ids: "id",
+  indices: "index",
+  indexes: "index",
+  lastnames: "lastname",
+  mobiles: "mobile",
+  names: "name",
+  numbers: "number",
+  phonenumbers: "phonenumber",
+  phones: "phone",
+  prices: "price",
+  quantities: "quantity",
+  ranks: "rank",
+  telephones: "telephone",
+  totals: "total",
+  values: "value",
+});
+
+function canonicalPropertyToken(token: string): string {
+  return canonicalPropertyTokens[token] ?? token;
+}
+
+function canonicalPropertyKeyTokens(key: string): string[] {
+  return propertyKeyTokens(key).map(canonicalPropertyToken);
+}
+
+const safeNumericIdentifierTokens = new Set([
+  "id",
+  "identifier",
+  "count",
+  "counter",
+  "index",
+  "rank",
+  "total",
+  "amount",
+  "price",
+  "quantity",
+]);
+
+function hasSafeNumericIdentifierToken(tokens: string[]): boolean {
+  return tokens.some((token) => safeNumericIdentifierTokens.has(token));
 }
 
 function blockedPropertyKey(key: string): boolean {
-  const tokens = propertyKeyTokens(key).map(singularPropertyToken);
+  const tokens = canonicalPropertyKeyTokens(key);
   const normalized = tokens.join("_");
   const compact = tokens.join("");
+  if (hasSafeNumericIdentifierToken(tokens)) return false;
   if (/(?:^|_)e_mail(?:_|$)/.test(normalized)) return true;
-  if (tokens.some((token) => ["email", "phone", "address", "street", "zip"].includes(token))) return true;
+  if (tokens.some((token) => [
+    "email",
+    "phone",
+    "phonenumber",
+    "mobile",
+    "telephone",
+    "cellphone",
+    "address",
+    "street",
+    "zip",
+  ].includes(token))) return true;
+  if (["contactnumber", "mobilenumber", "telephonenumber", "cellphonenumber"].includes(compact)) return true;
   if (/(?:^|_)(?:first|last|full)_name(?:_|$)/.test(normalized)) return true;
   if (["name", "firstname", "lastname", "fullname"].includes(compact)) return true;
   if (/(?:^|_)postal_code(?:_|$)/.test(normalized)) return true;
@@ -58,17 +118,23 @@ function blockedPropertyKey(key: string): boolean {
 }
 
 function numericPhonePropertyKey(key: string): boolean {
-  const tokens = propertyKeyTokens(key).map(singularPropertyToken);
-  const normalized = tokens.join("_");
-  if (tokens.some((token) => ["phone", "mobile", "telephone", "tel", "cellphone"].includes(token))) {
-    return !tokens.some((token) => ["count", "id", "index", "rank", "total"].includes(token));
+  const tokens = canonicalPropertyKeyTokens(key);
+  if (hasSafeNumericIdentifierToken(tokens)) return false;
+  if (tokens.some((token) => [
+    "phone",
+    "phonenumber",
+    "mobile",
+    "telephone",
+    "tel",
+    "cellphone",
+  ].includes(token))) {
+    return true;
   }
-  return ["contact", "contact_number", "contact_value"].includes(normalized);
+  return tokens.some((token) => ["contact", "contactnumber", "contactvalue"].includes(token));
 }
 
 function safeNumericIdentifierKey(key: string): boolean {
-  const tokens = propertyKeyTokens(key);
-  return tokens.some((token) => ["id", "count", "index", "rank", "total", "amount", "price", "quantity"].includes(token));
+  return hasSafeNumericIdentifierToken(canonicalPropertyKeyTokens(key));
 }
 
 function hasNumericPhoneContext(path: Array<string | number>): boolean {
