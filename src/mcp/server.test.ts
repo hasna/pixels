@@ -57,6 +57,19 @@ describe("pixels MCP contract", () => {
       expect(hostile.isError).toBeTrue();
       expect(JSON.stringify(hostile.content)).toContain("direct phone number");
       expect(hostile.structuredContent).toBeUndefined();
+
+      const cellNumberHostile = await client.callTool({
+        name: "pixels_evaluate_event",
+        arguments: {
+          event: { name: "lead", properties: { cell_number: 15551234567 } },
+          consent: { analytics: true, advertising: false },
+          policy: { enabled: true, allowedProviders: ["google-analytics"] },
+          providers: [{ provider: "google-analytics", enabled: true, measurementId: "G-ABC12345" }],
+        },
+      });
+      expect(cellNumberHostile.isError).toBeTrue();
+      expect(JSON.stringify(cellNumberHostile.content)).toContain("direct phone number");
+      expect(cellNumberHostile.structuredContent).toBeUndefined();
     });
   });
 });

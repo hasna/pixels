@@ -86,10 +86,15 @@ describe("browser dispatcher", () => {
       providers: [{ provider: "google-analytics", enabled: true, measurementId: "G-ABC12345" }],
     });
 
-    await expect(client.track({
-      name: "lead",
-      properties: { primarycustomername: "Ada Lovelace" },
-    }, { analytics: true, advertising: false })).rejects.toThrow();
+    for (const properties of [
+      { primarycustomername: "Ada Lovelace" },
+      { cellNumber: 15551234567 },
+    ]) {
+      await expect(client.track({
+        name: "lead",
+        properties,
+      }, { analytics: true, advertising: false })).rejects.toThrow();
+    }
     expect(scripts).toHaveLength(0);
     expect(globals["gtag"]).toBeUndefined();
     expect(globals["dataLayer"]).toBeUndefined();

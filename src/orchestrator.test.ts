@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_POLICY, PixelOrchestrator, evaluatePixelEvent } from "./orchestrator.js";
-import type { EvaluationRequest, ProviderConfig } from "./types.js";
+import type { EvaluationRequest, PropertyValue, ProviderConfig } from "./types.js";
 
 const ga: ProviderConfig = { provider: "google-analytics", enabled: true, measurementId: "G-ABC12345" };
 const meta: ProviderConfig = { provider: "meta", enabled: true, pixelId: "123456789" };
@@ -304,6 +304,68 @@ describe("evaluatePixelEvent", () => {
     }
   });
 
+  test("rejects common cell-number renderings", () => {
+    const cellNumberKeys = [
+      "cellnumber",
+      "cellNumber",
+      "cell_number",
+      "cell-number",
+      "cell.number",
+      "CELLNUMBER",
+      "primaryCellNumber",
+      "billing_cell_number",
+      "billingphone",
+      "emergencyTelephone",
+      "homephone",
+      "home-mobile",
+      "personalphone",
+      "work.tel",
+      "supportCell",
+    ];
+    for (const key of cellNumberKeys) {
+      expect(() => evaluatePixelEvent(request({
+        event: { name: "lead", properties: { [key]: 15551234567 } },
+      })), key).toThrow();
+    }
+  });
+
+  test("does not treat entity names or embedded words as PII tokens", () => {
+    const safeProperties = {
+      orgName: "Hasna",
+      primaryOrgName: "Hasna",
+      ORGANIZATION_NAME: "Hasna",
+      saxophone: "alto",
+      headphones: "studio",
+      zipper: "metal",
+      streetwear: "summer",
+      addressablemarket: 42,
+      mobilegame: "puzzle",
+      codename: "apollo",
+      projectname: "pixels",
+      teamname: "growth",
+      appname: "news",
+    };
+    expect(() => evaluatePixelEvent(request({
+      event: { name: "page_view", properties: safeProperties },
+    }))).not.toThrow();
+  });
+
+  test("rejects high-risk semantic pairs across bounded unknown modifiers", () => {
+    const hostileKeys = [
+      "contactqzxphone",
+      "phoneqzxcontact",
+      "cellneutralxnumber",
+      "customerqzxname",
+      "nameqzxcustomer",
+      "recipientqzxfullname",
+    ];
+    for (const key of hostileKeys) {
+      expect(() => evaluatePixelEvent(request({
+        event: { name: "lead", properties: { [key]: 15551234567 } },
+      })), key).toThrow();
+    }
+  });
+
   test("rejects compact personal semantics surrounded by bounded modifier spans", () => {
     const modifiers = [
       "primary", "billing", "emergency", "shipping", "alternate", "preferred", "secondary",
@@ -468,6 +530,160 @@ describe("evaluatePixelEvent", () => {
     });
     expect(safeCases.size).toBeGreaterThanOrEqual(453);
     expect(falsePositiveKeys).toEqual([]);
+  });
+
+  test("preserves a 150k hostile and 1.7k safe semantic boundary corpus", () => {
+    const renderers = [
+      (tokens: string[]) => tokens.join(""),
+      (tokens: string[]) => tokens.join("").toUpperCase(),
+      (tokens: string[]) => tokens[0] + tokens.slice(1).map((token) =>
+        token[0]!.toUpperCase() + token.slice(1)).join(""),
+      (tokens: string[]) => tokens.join("_"),
+      (tokens: string[]) => tokens.join("-"),
+      (tokens: string[]) => tokens.join("."),
+    ];
+    const hostilePhrases = [
+      ["contact", "phone"], ["phone", "contact"],
+      ["contact", "number"], ["number", "contact"],
+      ["cell", "number"], ["number", "cell"],
+      ["customer", "name"], ["name", "customer"],
+      ["holder", "name"], ["name", "holder"],
+      ["recipient", "full", "name"], ["name", "of", "recipient"],
+      ["member", "mobile"], ["mobile", "member"],
+      ["user", "telephone"], ["telephone", "user"],
+      ["visitor", "phone"], ["phone", "visitor"],
+      ["person", "cell"], ["cell", "person"],
+      ["display", "name"], ["name", "display"],
+      ["profile", "mobile"], ["author", "telephone"],
+    ];
+    const prefixes = Array.from({ length: 36 }, (_, index) => `qx${index.toString(36)}z`);
+    const suffixes = Array.from({ length: 30 }, (_, index) => `vy${index.toString(36)}k`);
+    const hostileKeys = new Set<string>();
+    for (const phrase of hostilePhrases) {
+      for (const prefix of prefixes) {
+        for (const suffix of suffixes) {
+          for (const render of renderers) hostileKeys.add(render([prefix, ...phrase, suffix]));
+        }
+      }
+    }
+    const missedHostileKeys: string[] = [];
+    let hostileIndex = 0;
+    for (const key of hostileKeys) {
+      const leaf = { [key]: 15551234567 };
+      const shape = hostileIndex % 3 === 0
+        ? leaf
+        : hostileIndex % 3 === 1
+          ? { metadata: leaf }
+          : { records: [leaf] };
+      hostileIndex += 1;
+      try {
+        evaluatePixelEvent(request({
+          event: { name: "lead", properties: shape as EvaluationRequest["event"]["properties"] },
+        }));
+        if (missedHostileKeys.length < 20) missedHostileKeys.push(key);
+      } catch {
+        // Expected: the public schema rejects before any dispatch decision.
+      }
+    }
+    expect(hostileKeys.size).toBeGreaterThanOrEqual(149_770);
+    expect(missedHostileKeys).toEqual([]);
+
+    const modifiers = [
+      "primary", "billing", "emergency", "shipping", "alternate", "preferred",
+      "secondary", "qzx", "neutralx",
+    ];
+    const safeEntities = [
+      "app", "application", "code", "event", "product", "company", "organization",
+      "org", "campaign", "category", "file", "host", "domain", "project", "team",
+    ];
+    const safeNameStructures = [
+      (entity: string) => [entity, "name"],
+      (entity: string) => [entity, "name", "label"],
+      (entity: string) => [entity, "name", "field"],
+      (entity: string) => [entity, "name", "description"],
+      (entity: string) => ["name", "of", entity],
+      (entity: string) => [entity, "metadata", "name"],
+      (entity: string) => [entity, "name", "value"],
+      (entity: string) => [entity, "name", "key"],
+      (entity: string) => [entity, "name", "attribute"],
+      (entity: string) => [entity, "name", "detail"],
+      (entity: string) => [entity, "name", "record"],
+    ];
+    const safeNumericLeaves = [
+      "id", "identifier", "count", "counter", "index", "rank", "total", "amount", "price", "quantity",
+    ];
+    const safeCases = new Map<string, PropertyValue>();
+    for (const entity of safeEntities) {
+      for (const structure of safeNameStructures) {
+        for (const render of renderers) safeCases.set(render(structure(entity)), "Research Journal");
+      }
+      for (const modifier of modifiers) {
+        for (const render of renderers) safeCases.set(render([modifier, entity, "name"]), "Research Journal");
+      }
+    }
+    for (const modifier of modifiers) {
+      for (const leaf of safeNumericLeaves) {
+        for (const render of renderers) safeCases.set(render([modifier, "contact", leaf]), 15551234567);
+      }
+    }
+    for (const key of [
+      "saxophone", "headphones", "microphone", "telephonebook", "mobilegame",
+      "cellularnetwork", "cellophane", "zipper", "zipline", "streetwear",
+      "addressablemarket", "contactlesspayment", "phonetics", "codename",
+      "projectname", "teamname", "appname",
+    ]) safeCases.set(key, "ordinary non-person value");
+    for (const collision of [
+      "saxophone", "headphones", "microphone", "zipper", "zipline", "streetwear",
+      "addressablemarket", "contactlesspayment", "phonetics", "cellophane",
+    ]) {
+      for (const modifier of modifiers) {
+        for (const render of renderers) {
+          safeCases.set(render([modifier, collision]), "ordinary non-person value");
+        }
+      }
+    }
+
+    const falsePositiveKeys: string[] = [];
+    for (const [key, value] of safeCases) {
+      try {
+        evaluatePixelEvent(request({
+          event: { name: "page_view", properties: { [key]: value } },
+        }));
+      } catch {
+        if (falsePositiveKeys.length < 20) falsePositiveKeys.push(key);
+      }
+    }
+    expect(safeCases.size).toBeGreaterThanOrEqual(1_716);
+    expect(falsePositiveKeys).toEqual([]);
+  }, 30_000);
+
+  test("keeps semantic decisions stable after bounded cache churn", () => {
+    const classify = (key: string, value: PropertyValue): "accepted" | "rejected" => {
+      try {
+        evaluatePixelEvent(request({ event: { name: "probe", properties: { [key]: value } } }));
+        return "accepted";
+      } catch {
+        return "rejected";
+      }
+    };
+    const probes: Array<[string, PropertyValue]> = [
+      ["cellnumber", 15551234567],
+      ["contactqzxphone", 15551234567],
+      ["customerneutralxname", "Ada Lovelace"],
+      ["orgName", "Hasna"],
+      ["primaryOrgName", "Hasna"],
+      ["saxophone", "alto"],
+      ["mobilegame", "puzzle"],
+    ];
+    const before = probes.map(([key, value]) => classify(key, value));
+    for (let index = 0; index < 900; index += 1) {
+      classify(`qz${index.toString(36)}informationmetadatarecorddetail`, index);
+    }
+    const after = probes.map(([key, value]) => classify(key, value));
+    expect(before).toEqual([
+      "rejected", "rejected", "rejected", "accepted", "accepted", "accepted", "accepted",
+    ]);
+    expect(after).toEqual(before);
   });
 
   test("accepts safe identifiers, dotted versions, and email-like non-address text", () => {

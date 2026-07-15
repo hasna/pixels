@@ -37,8 +37,11 @@ function propertyKeyTokens(key: string): string[] {
 }
 
 const canonicalPropertyTokens: Readonly<Record<string, string>> = Object.freeze({
+  applications: "application",
+  apps: "app",
   addresses: "address",
   amounts: "amount",
+  cells: "cell",
   cellphones: "cellphone",
   contacts: "contact",
   contactnumbers: "contactnumber",
@@ -57,6 +60,9 @@ const canonicalPropertyTokens: Readonly<Record<string, string>> = Object.freeze(
   mobiles: "mobile",
   names: "name",
   numbers: "number",
+  organizations: "organization",
+  org: "organization",
+  orgs: "organization",
   phonenumbers: "phonenumber",
   phones: "phone",
   prices: "price",
@@ -75,25 +81,36 @@ const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
   ...canonicalPropertyTokens,
   address: "address",
   alias: "alias",
+  alternate: "alternate",
   amount: "amount",
+  app: "app",
+  application: "application",
   attribute: "attribute",
   author: "author",
+  backup: "backup",
+  billing: "billing",
+  business: "business",
   campaign: "campaign",
   category: "category",
+  cell: "cell",
   cellphone: "cellphone",
   client: "client",
   code: "code",
   company: "company",
   contact: "contact",
+  contactnumber: "contactnumber",
+  contactvalue: "contactvalue",
   count: "count",
   counter: "counter",
   customer: "customer",
   data: "data",
   description: "description",
   detail: "detail",
+  default: "default",
   display: "display",
   domain: "domain",
   email: "email",
+  emergency: "emergency",
   event: "event",
   extension: "extension",
   family: "family",
@@ -106,6 +123,7 @@ const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
   group: "group",
   holder: "holder",
   host: "host",
+  home: "home",
   id: "id",
   identifier: "identifier",
   index: "index",
@@ -121,35 +139,47 @@ const semanticPropertyWords: Readonly<Record<string, string>> = Object.freeze({
   mail: "mail",
   member: "member",
   metadata: "metadata",
+  main: "main",
   mobile: "mobile",
   name: "name",
   note: "note",
   number: "number",
   of: "of",
+  office: "office",
   order: "order",
   organization: "organization",
   person: "person",
+  personal: "personal",
   phone: "phone",
+  phonenumber: "phonenumber",
   postal: "postal",
   preferred: "preferred",
   price: "price",
+  primary: "primary",
   product: "product",
   profile: "profile",
+  project: "project",
   quantity: "quantity",
   rank: "rank",
   recipient: "recipient",
   record: "record",
   remote: "remote",
+  secondary: "secondary",
+  shipping: "shipping",
   source: "source",
   street: "street",
+  support: "support",
   surname: "surname",
+  team: "team",
   tel: "tel",
   telephone: "telephone",
   text: "text",
   total: "total",
   user: "user",
   value: "value",
+  verified: "verified",
   visitor: "visitor",
+  work: "work",
   zip: "zip",
 });
 
@@ -264,14 +294,6 @@ function semanticPropertyRuns(token: string): SemanticPropertyRun[] {
   return runs;
 }
 
-function recognizedSemanticKeyTokens(key: string): string[] {
-  const tokens = propertyKeyTokens(key);
-  return [...new Set([
-    ...canonicalPropertyKeyTokens(key),
-    ...tokens.flatMap((token) => semanticPropertyRuns(token).flatMap((run) => run.tokens)),
-  ])];
-}
-
 function canonicalPropertyKeyTokens(key: string): string[] {
   return propertyKeyTokens(key).flatMap((token) =>
     segmentCompactPropertyToken(token) ?? [canonicalPropertyToken(token)]);
@@ -344,10 +366,15 @@ const personalContextContainerWords = Object.freeze(
 );
 
 const safeNonPersonNameKeys = new Set([
+  "appname",
+  "applicationname",
+  "codename",
   "eventname",
   "productname",
   "companyname",
   "organizationname",
+  "projectname",
+  "teamname",
   "campaignname",
   "categoryname",
   "filename",
@@ -357,6 +384,9 @@ const safeNonPersonNameKeys = new Set([
 ]);
 
 const safeNonPersonNameTokens = new Set([
+  "app",
+  "application",
+  "code",
   "event",
   "product",
   "company",
@@ -366,6 +396,8 @@ const safeNonPersonNameTokens = new Set([
   "file",
   "host",
   "domain",
+  "project",
+  "team",
 ]);
 
 const safeNameStructureTokens = new Set([
@@ -398,6 +430,137 @@ const directHumanNameModifierTokens = new Set([
   "maiden",
   "preferred",
 ]);
+
+const controlledSemanticModifierTokens = new Set([
+  ...directHumanNameModifierTokens,
+  "alternate",
+  "backup",
+  "billing",
+  "business",
+  "default",
+  "emergency",
+  "home",
+  "main",
+  "office",
+  "personal",
+  "primary",
+  "secondary",
+  "shipping",
+  "support",
+  "verified",
+  "work",
+]);
+
+const directPhoneSemanticTokens = new Set([
+  "cell",
+  "cellphone",
+  "mobile",
+  "phone",
+  "phonenumber",
+  "tel",
+  "telephone",
+]);
+
+function isPhoneSemanticPhrase(tokens: readonly string[]): boolean {
+  const hasPhone = tokens.some((token) => directPhoneSemanticTokens.has(token));
+  if (tokens.includes("cell") && tokens.includes("number")) return true;
+  if (tokens.includes("contact") && tokens.some((token) => [
+    "cell",
+    "cellphone",
+    "mobile",
+    "number",
+    "phone",
+    "phonenumber",
+    "tel",
+    "telephone",
+    "value",
+  ].includes(token))) return true;
+  return hasPhone && tokens.some((token) =>
+    token === "number"
+      || token === "contact"
+      || personalNameContextTokens.has(canonicalPersonalContextToken(token))
+      || controlledSemanticModifierTokens.has(token));
+}
+
+function isPersonalNameSemanticPhrase(tokens: readonly string[]): boolean {
+  const hasName = tokens.some((token) => [
+    "firstname",
+    "forename",
+    "fullname",
+    "lastname",
+    "name",
+    "surname",
+  ].includes(token));
+  return hasName && tokens.some((token) =>
+    personalNameContextTokens.has(canonicalPersonalContextToken(token))
+      || directHumanNameModifierTokens.has(token));
+}
+
+function isHighRiskSemanticPhrase(tokens: readonly string[]): boolean {
+  return tokens.length > 1
+    && (isPhoneSemanticPhrase(tokens) || isPersonalNameSemanticPhrase(tokens));
+}
+
+function isBoundedHighRiskAnchorPair(tokens: readonly string[]): boolean {
+  const hasPhone = tokens.some((token) => directPhoneSemanticTokens.has(token));
+  const hasPersonalContext = tokens.some((token) =>
+    personalNameContextTokens.has(canonicalPersonalContextToken(token)));
+  const hasName = tokens.some((token) => [
+    "firstname",
+    "forename",
+    "fullname",
+    "lastname",
+    "name",
+    "surname",
+  ].includes(token));
+  if (tokens.includes("cell") && tokens.includes("number")) return true;
+  if (tokens.includes("contact") && tokens.some((token) =>
+    token === "number" || token === "value" || directPhoneSemanticTokens.has(token))) return true;
+  if (hasPhone && (tokens.includes("number") || hasPersonalContext)) return true;
+  return hasName && (hasPersonalContext
+    || tokens.some((token) => directHumanNameModifierTokens.has(token)));
+}
+
+const MAX_UNKNOWN_SEMANTIC_MODIFIER_LENGTH = 16;
+
+function recognizedHighRiskRunTokens(rawToken: string): string[] {
+  const runs = semanticPropertyRuns(rawToken);
+  const recognized = new Set<string>();
+  for (const run of runs) {
+    if (isHighRiskSemanticPhrase(run.tokens)
+      && (run.end === rawToken.length || isBoundedHighRiskAnchorPair(run.tokens))) {
+      run.tokens.forEach((token) => recognized.add(token));
+    }
+  }
+
+  // A compact renderer can place one bounded, unrecognized modifier between
+  // two explicit risk anchors. Require the pair itself to form a complete
+  // high-risk semantic phrase; never promote a lone substring match.
+  for (let leftIndex = 0; leftIndex < runs.length; leftIndex += 1) {
+    const left = runs[leftIndex]!;
+    for (let rightIndex = leftIndex + 1; rightIndex < runs.length; rightIndex += 1) {
+      const right = runs[rightIndex]!;
+      if (right.start < left.end) continue;
+      const gapLength = right.start - left.end;
+      if (gapLength > MAX_UNKNOWN_SEMANTIC_MODIFIER_LENGTH) break;
+      const combined = [...left.tokens, ...right.tokens];
+      if (!isBoundedHighRiskAnchorPair(combined)) continue;
+      combined.forEach((token) => recognized.add(token));
+    }
+  }
+  return [...recognized];
+}
+
+/**
+ * Returns exact semantic tokens plus tokens from complete multi-word risk
+ * phrases. A lone word found inside an unrelated identifier is intentionally
+ * not promoted to a field boundary (`saxophone`, `zipper`, `mobilegame`).
+ */
+function recognizedRiskSemanticKeyTokens(key: string): string[] {
+  const exactTokens = canonicalPropertyKeyTokens(key);
+  const phraseTokens = propertyKeyTokens(key).flatMap(recognizedHighRiskRunTokens);
+  return [...new Set([...exactTokens, ...phraseTokens])];
+}
 
 function singularNameKeyCompact(key: string): string {
   const compact = canonicalPropertyKeyTokens(key).join("");
@@ -467,27 +630,27 @@ function pathHasPersonalNameContext(path: Array<string | number>): boolean {
 
 function blockedHumanNameKey(key: string, path: Array<string | number>): boolean {
   const exactTerms = canonicalPropertyKeyTokens(key);
-  const terms = recognizedSemanticKeyTokens(key);
+  const terms = recognizedRiskSemanticKeyTokens(key);
   const compact = singularNameKeyCompact(key);
   if (safeNonPersonNameKeys.has(compact)) return false;
   if (!hasPersonalContextToken(terms) && hasExplicitSafeNonPersonNameSemantic(key, exactTerms)) return false;
   if (directHumanNameKeys.has(compact)) return true;
-  const hasNameSemantic = compact.endsWith("name")
-    || terms.includes("name")
+  const rawLeaf = propertyKeyTokens(key).at(-1);
+  const hasNameSemantic = terms.includes("name")
     || terms.some((term) => ["forename", "surname"].includes(term));
-  if (!hasNameSemantic) return false;
+  const hasAmbiguousPersonalNameSuffix = Boolean(
+    rawLeaf?.endsWith("name") && pathHasPersonalNameContext(path),
+  );
+  if (!hasNameSemantic && !hasAmbiguousPersonalNameSuffix) return false;
 
   if (terms.some((term) => directHumanNameModifierTokens.has(term))) return true;
   if (hasPersonalContextToken(terms)) return true;
-  const rawLeaf = propertyKeyTokens(key).at(-1);
-  if (rawLeaf && semanticPropertyRuns(rawLeaf).some((run) =>
-    run.end === rawLeaf.length && run.tokens.at(-1) === "name")) return true;
   return pathHasPersonalNameContext(path);
 }
 
 function blockedPropertyKey(key: string, path: Array<string | number> = []): boolean {
   const tokens = canonicalPropertyKeyTokens(key);
-  const recognizedTokens = recognizedSemanticKeyTokens(key);
+  const recognizedTokens = recognizedRiskSemanticKeyTokens(key);
   const normalized = tokens.join("_");
   const compact = tokens.join("");
   if (hasSafeNumericLeafSemantic(key)) return false;
@@ -498,6 +661,8 @@ function blockedPropertyKey(key: string, path: Array<string | number> = []): boo
     "phonenumber",
     "mobile",
     "telephone",
+    "tel",
+    "cell",
     "cellphone",
     "address",
     "street",
@@ -512,7 +677,7 @@ function blockedPropertyKey(key: string, path: Array<string | number> = []): boo
 }
 
 function numericPhonePropertyKey(key: string): boolean {
-  const tokens = recognizedSemanticKeyTokens(key);
+  const tokens = recognizedRiskSemanticKeyTokens(key);
   if (hasSafeNumericLeafSemantic(key)) return false;
   if (tokens.some((token) => [
     "phone",
@@ -520,6 +685,7 @@ function numericPhonePropertyKey(key: string): boolean {
     "mobile",
     "telephone",
     "tel",
+    "cell",
     "cellphone",
   ].includes(token))) {
     return true;
