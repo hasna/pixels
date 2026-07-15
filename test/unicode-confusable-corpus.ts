@@ -8,6 +8,9 @@ const sourcePath = join(import.meta.dir, "..", "scripts", "unicode", "confusable
 
 interface IndependentCorpus {
   readonly sourceSha256: string;
+  readonly officialAsciiNormalizationAliases: readonly (readonly [string, string])[];
+  readonly officialAsciiNormalizationSensitiveKeys: readonly string[];
+  readonly officialAsciiNormalizationSafeTelecomKeys: readonly string[];
   readonly officialHostileKeys: readonly string[];
   readonly officialNormalizationHostileKeys: readonly string[];
   readonly conservativeWildcardKeys: readonly string[];
@@ -37,6 +40,7 @@ export function independentUnicodeConfusableCorpus(): IndependentCorpus {
   const source = readFileSync(sourcePath, "utf8");
   const sourceSha256 = createHash("sha256").update(source).digest("hex");
   const mappings = new Map<string, string>();
+  const asciiNormalizationAliases = new Map<string, Set<string>>();
 
   for (const rawLine of source.split(/\r?\n/)) {
     const data = rawLine.split("#", 1)[0]?.trim();
@@ -52,14 +56,67 @@ export function independentUnicodeConfusableCorpus(): IndependentCorpus {
       .map((hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
       .join("");
     const target = normalizedAsciiTarget(targetCharacters);
-    if (target) mappings.set(character, target);
+    if (target) {
+      mappings.set(character, target);
+      for (const form of ["NFC", "NFD", "NFKC", "NFKD"] as const) {
+        const normalized = character.normalize(form);
+        for (const variant of [normalized, normalized.toLowerCase(), normalized.toUpperCase()]) {
+          if (/[^\x00-\x7f]/.test(variant)) continue;
+          const alias = variant
+            .replace(/\p{M}+/gu, "")
+            .toUpperCase()
+            .toLowerCase();
+          if (!/^[a-z0-9]+$/.test(alias) || alias === target) continue;
+          const targets = asciiNormalizationAliases.get(alias) ?? new Set<string>();
+          targets.add(target);
+          asciiNormalizationAliases.set(alias, targets);
+        }
+      }
+    }
   }
+
+  const officialAsciiNormalizationAliases = [...asciiNormalizationAliases]
+    .flatMap(([sourceAlias, targets]) => [...targets].map((target) => [sourceAlias, target] as const))
+    .sort(([leftSource, leftTarget], [rightSource, rightTarget]) => {
+      if (leftSource !== rightSource) return leftSource < rightSource ? -1 : 1;
+      return leftTarget === rightTarget ? 0 : leftTarget < rightTarget ? -1 : 1;
+    });
 
   const sensitiveTemplates = [
     "phone", "email", "address", "street", "postalcode", "zip", "clientip",
     "remoteip", "ipaddress", "useragent", "cellularnumber", "contactphone",
     "customername", "firstname", "lastname", "fullname", "surname", "forename",
   ];
+  const officialAsciiNormalizationSensitiveKeys = new Set<string>();
+  for (const [sourceAlias, target] of officialAsciiNormalizationAliases) {
+    for (const template of sensitiveTemplates) {
+      let offset = template.indexOf(target);
+      while (offset >= 0) {
+        const substituted = `${template.slice(0, offset)}${sourceAlias}${template.slice(offset + target.length)}`;
+        // Both wrappers are ordinary unknown metadata spans. Together they
+        // deliberately cross the historical whole-token alias cutoff while
+        // retaining one bounded sensitive semantic run in the middle.
+        officialAsciiNormalizationSensitiveKeys.add(`qxalias${substituted}suffixz`);
+        offset = template.indexOf(target, offset + 1);
+      }
+    }
+  }
+  const officialAsciiNormalizationSafeTelecomKeys = new Set<string>();
+  const safeTelecomDescriptors = [
+    "organization", "application", "network", "provider", "carrier", "standard",
+    "protocol", "band", "technology", "plan", "product", "service", "campaign",
+    "category", "file", "domain", "host", "project", "team",
+  ];
+  for (const [sourceAlias, target] of officialAsciiNormalizationAliases) {
+    for (const descriptor of safeTelecomDescriptors) {
+      let offset = descriptor.indexOf(target);
+      while (offset >= 0) {
+        const substituted = `${descriptor.slice(0, offset)}${sourceAlias}${descriptor.slice(offset + target.length)}`;
+        officialAsciiNormalizationSafeTelecomKeys.add(`safeqcellular${substituted}name`);
+        offset = descriptor.indexOf(target, offset + 1);
+      }
+    }
+  }
   const officialHostileKeys = new Set<string>();
   const officialNormalizationHostileKeys = new Set<string>();
   const safeMixedTelecomKeys = new Set<string>();
@@ -144,6 +201,9 @@ export function independentUnicodeConfusableCorpus(): IndependentCorpus {
 
   cachedCorpus = Object.freeze({
     sourceSha256,
+    officialAsciiNormalizationAliases: Object.freeze(officialAsciiNormalizationAliases),
+    officialAsciiNormalizationSensitiveKeys: Object.freeze([...officialAsciiNormalizationSensitiveKeys]),
+    officialAsciiNormalizationSafeTelecomKeys: Object.freeze([...officialAsciiNormalizationSafeTelecomKeys]),
     officialHostileKeys: Object.freeze([...officialHostileKeys]),
     officialNormalizationHostileKeys: Object.freeze([...officialNormalizationHostileKeys]),
     conservativeWildcardKeys: Object.freeze([...conservativeWildcardKeys]),

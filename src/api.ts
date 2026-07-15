@@ -3,6 +3,7 @@ import { PixelOrchestrator, evaluatePixelEvent } from "./orchestrator.js";
 import { listProviders } from "./providers.js";
 import { evaluationRequestSchema } from "./schema.js";
 import type { PixelDispatcher } from "./types.js";
+import { readBoundedRequestBody } from "./http-body.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -10,6 +11,7 @@ export interface PixelsApiOptions {
   dispatcher?: PixelDispatcher;
   authorize?: (request: Request) => boolean | Promise<boolean>;
   corsOrigin?: string;
+  bodyReadTimeoutMs?: number;
 }
 
 export interface PixelsHttpServer {
@@ -31,14 +33,23 @@ function json(value: unknown, status: number, options: PixelsApiOptions): Respon
   return new Response(JSON.stringify(value), { status, headers: responseHeaders(options) });
 }
 
-async function readRequestJson(request: Request): Promise<unknown> {
-  const declared = request.headers.get("content-length");
-  if (declared && Number.parseInt(declared, 10) > MAX_BODY_BYTES) {
-    throw new Error("request body exceeds 64 KiB");
+class RequestBodyError extends Error {
+  constructor(readonly status: 400 | 408 | 413, message: string) {
+    super(message);
   }
-  const text = await request.text();
-  if (new TextEncoder().encode(text).byteLength > MAX_BODY_BYTES) {
-    throw new Error("request body exceeds 64 KiB");
+}
+
+async function readRequestJson(request: Request, options: PixelsApiOptions): Promise<unknown> {
+  const bounded = await readBoundedRequestBody(request, {
+    maxBytes: MAX_BODY_BYTES,
+    timeoutMs: options.bodyReadTimeoutMs,
+  });
+  if (!bounded.ok) throw new RequestBodyError(bounded.status, bounded.message);
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bounded.body);
+  } catch {
+    throw new RequestBodyError(400, "request body must be valid UTF-8");
   }
   if (!text.trim()) throw new Error("request body must contain JSON");
   return JSON.parse(text) as unknown;
@@ -52,11 +63,12 @@ function invalidInput(error: unknown, options: PixelsApiOptions): Response {
       issues: error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })),
     }, 400, options);
   }
+  const status = error instanceof RequestBodyError ? error.status : 400;
   return json({
     ok: false,
     error: "invalid_input",
     message: error instanceof Error ? error.message : "invalid request",
-  }, 400, options);
+  }, status, options);
 }
 
 export function createPixelsHttpHandler(options: PixelsApiOptions = {}): (request: Request) => Promise<Response> {
@@ -82,7 +94,7 @@ export function createPixelsHttpHandler(options: PixelsApiOptions = {}): (reques
     }
     if (request.method === "POST" && url.pathname === "/v1/evaluate") {
       try {
-        const input = evaluationRequestSchema.parse(await readRequestJson(request));
+        const input = evaluationRequestSchema.parse(await readRequestJson(request, options));
         return json({ ok: true, result: evaluatePixelEvent(input) }, 200, options);
       } catch (error) {
         return invalidInput(error, options);
@@ -102,7 +114,7 @@ export function createPixelsHttpHandler(options: PixelsApiOptions = {}): (reques
         return json({ ok: false, error: "unauthorized" }, 401, options);
       }
       try {
-        const input = evaluationRequestSchema.parse(await readRequestJson(request));
+        const input = evaluationRequestSchema.parse(await readRequestJson(request, options));
         const orchestrator = new PixelOrchestrator({ policy: input.policy, providers: input.providers });
         const result = await orchestrator.dispatch({ event: input.event, consent: input.consent, signals: input.signals }, options.dispatcher);
         const publicResult = {

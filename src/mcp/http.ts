@@ -1,10 +1,12 @@
 import { isIP } from "node:net";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { readBoundedRequestBody } from "../http-body.js";
 import { buildPixelsMcpServer } from "./server.js";
 
 export interface PixelsMcpHttpOptions {
   allowedOrigins?: readonly string[];
   authorize?: (request: Request) => boolean | Promise<boolean>;
+  bodyReadTimeoutMs?: number;
 }
 
 export interface PixelsMcpHttpServerOptions extends PixelsMcpHttpOptions {
@@ -32,55 +34,26 @@ function securityResponse(status: number, error: string): Response {
   });
 }
 
-async function requestWithBoundedBody(request: Request): Promise<Request | Response> {
+async function requestWithBoundedBody(
+  request: Request,
+  timeoutMs: number | undefined,
+): Promise<Request | Response> {
+  const bounded = await readBoundedRequestBody(request, {
+    maxBytes: MAX_MCP_HTTP_BODY_BYTES,
+    timeoutMs,
+  });
+  if (!bounded.ok) return securityResponse(bounded.status, bounded.message);
   if (request.body === null) return request;
-  const declared = request.headers.get("content-length");
-  if (declared !== null) {
-    const declaredBytes = Number(declared);
-    if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0) {
-      return securityResponse(400, "invalid content length");
-    }
-    if (declaredBytes > MAX_MCP_HTTP_BODY_BYTES) {
-      return securityResponse(413, "request body exceeds 64 KiB");
-    }
-  }
-
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-  try {
-    while (true) {
-      if (request.signal.aborted) {
-        await reader.cancel().catch(() => {});
-        return securityResponse(408, "request aborted");
-      }
-      const { done, value } = await reader.read();
-      if (done) break;
-      totalBytes += value.byteLength;
-      if (totalBytes > MAX_MCP_HTTP_BODY_BYTES) {
-        await reader.cancel().catch(() => {});
-        return securityResponse(413, "request body exceeds 64 KiB");
-      }
-      chunks.push(value);
-    }
-  } catch {
-    return request.signal.aborted
-      ? securityResponse(408, "request aborted")
-      : securityResponse(400, "unable to read request body");
-  }
-
-  const body = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
   const headers = new Headers(request.headers);
-  headers.set("content-length", String(totalBytes));
+  headers.delete("transfer-encoding");
+  headers.set("content-length", String(bounded.body.byteLength));
   return new Request(request.url, {
     method: request.method,
     headers,
-    body,
+    body: bounded.body.buffer.slice(
+      bounded.body.byteOffset,
+      bounded.body.byteOffset + bounded.body.byteLength,
+    ) as ArrayBuffer,
     signal: request.signal,
   });
 }
@@ -141,7 +114,7 @@ export async function handlePixelsMcpHttpRequest(
   }
 
   try {
-    const boundedRequest = await requestWithBoundedBody(request);
+    const boundedRequest = await requestWithBoundedBody(request, options.bodyReadTimeoutMs);
     if (boundedRequest instanceof Response) return boundedRequest;
     const server = buildPixelsMcpServer();
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined });

@@ -24,6 +24,28 @@ function initializeRequest(origin?: string): Request {
   });
 }
 
+function chunkedMcpBody(totalBytes = 2 * 1024 * 1024, chunkBytes = 16 * 1024) {
+  let bytesProduced = 0;
+  let pulls = 0;
+  let cancellations = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1;
+      if (bytesProduced >= totalBytes) {
+        controller.close();
+        return;
+      }
+      const size = Math.min(chunkBytes, totalBytes - bytesProduced);
+      bytesProduced += size;
+      controller.enqueue(new Uint8Array(size));
+    },
+    cancel() {
+      cancellations += 1;
+    },
+  });
+  return { stream, stats: () => ({ bytesProduced, pulls, cancellations }) };
+}
+
 describe("MCP HTTP transport", () => {
   test("exposes health and only the /mcp route", async () => {
     const health = await handlePixelsMcpHttpRequest(new Request("http://local/health"));
@@ -34,6 +56,9 @@ describe("MCP HTTP transport", () => {
 
     const missing = await handlePixelsMcpHttpRequest(new Request("http://local/other"));
     expect(missing.status).toBe(404);
+
+    const bodylessMcp = await handlePixelsMcpHttpRequest(new Request("http://local/mcp"));
+    expect(bodylessMcp.status).not.toBe(500);
   });
 
   test("rejects unapproved browser origins before invoking MCP", async () => {
@@ -92,6 +117,47 @@ describe("MCP HTTP transport", () => {
       body: oversizedBody,
     }));
     expect(streamedResponse.status).toBe(413);
+  });
+
+  test("cancels a chunked 2 MiB body after the bounded prefix", async () => {
+    const body = chunkedMcpBody();
+    const response = await handlePixelsMcpHttpRequest(new Request("http://127.0.0.1:8892/mcp", {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: body.stream,
+    }));
+    expect(response.status).toBe(413);
+    expect(body.stats().bytesProduced).toBeLessThan(2 * 1024 * 1024);
+    expect(body.stats().pulls).toBeLessThanOrEqual(6);
+    expect(body.stats().cancellations).toBe(1);
+  });
+
+  test("cancels a stalled body at the configured total deadline", async () => {
+    let cancellations = 0;
+    const stalled = new ReadableStream<Uint8Array>({
+      pull() {
+        return new Promise<void>(() => {});
+      },
+      cancel() {
+        cancellations += 1;
+      },
+    });
+    const started = performance.now();
+    const response = await handlePixelsMcpHttpRequest(new Request("http://127.0.0.1:8892/mcp", {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: stalled,
+    }), { bodyReadTimeoutMs: 20 });
+
+    expect(response.status).toBe(408);
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(cancellations).toBe(1);
   });
 
   test("fails closed when HTTP authentication rejects or is unavailable", async () => {

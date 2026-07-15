@@ -8,6 +8,31 @@ const payload = {
   providers: [{ provider: "google-analytics", enabled: true, measurementId: "G-ABC12345" }],
 };
 
+function syntheticChunkedBody(totalBytes = 2 * 1024 * 1024, chunkBytes = 16 * 1024) {
+  let bytesProduced = 0;
+  let pulls = 0;
+  let cancellations = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1;
+      if (bytesProduced >= totalBytes) {
+        controller.close();
+        return;
+      }
+      const size = Math.min(chunkBytes, totalBytes - bytesProduced);
+      bytesProduced += size;
+      controller.enqueue(new Uint8Array(size));
+    },
+    cancel() {
+      cancellations += 1;
+    },
+  });
+  return {
+    stream,
+    stats: () => ({ bytesProduced, pulls, cancellations }),
+  };
+}
+
 describe("pixels API", () => {
   test("reports fail-closed dispatch state", async () => {
     const response = await createPixelsHttpHandler()(new Request("http://local/health"));
@@ -76,7 +101,62 @@ describe("pixels API", () => {
       headers: { "content-length": "70000" },
       body: "{}",
     }));
-    expect(oversized.status).toBe(400);
+    expect(oversized.status).toBe(413);
+  });
+
+  test("stops chunked 2 MiB evaluate and event bodies at 64 KiB with zero dispatch", async () => {
+    const evaluateBody = syntheticChunkedBody();
+    const evaluateResponse = await createPixelsHttpHandler()(new Request("http://local/v1/evaluate", {
+      method: "POST",
+      body: evaluateBody.stream,
+    }));
+    expect(evaluateResponse.status).toBe(413);
+    expect(evaluateBody.stats().bytesProduced).toBeLessThan(2 * 1024 * 1024);
+    expect(evaluateBody.stats().pulls).toBeLessThanOrEqual(6);
+    expect(evaluateBody.stats().cancellations).toBe(1);
+
+    let dispatches = 0;
+    const eventBody = syntheticChunkedBody();
+    const eventResponse = await createPixelsHttpHandler({
+      authorize: () => true,
+      dispatcher: { dispatch() { dispatches += 1; } },
+    })(new Request("http://local/v1/events", {
+      method: "POST",
+      body: eventBody.stream,
+    }));
+    expect(eventResponse.status).toBe(413);
+    expect(eventBody.stats().bytesProduced).toBeLessThan(2 * 1024 * 1024);
+    expect(eventBody.stats().pulls).toBeLessThanOrEqual(6);
+    expect(eventBody.stats().cancellations).toBe(1);
+    expect(dispatches).toBe(0);
+  });
+
+  test("cancels declared overflow before pulling and times out a slow body", async () => {
+    const declaredBody = syntheticChunkedBody();
+    const declaredResponse = await createPixelsHttpHandler()(new Request("http://local/v1/evaluate", {
+      method: "POST",
+      headers: { "content-length": String(2 * 1024 * 1024) },
+      body: declaredBody.stream,
+    }));
+    expect(declaredResponse.status).toBe(413);
+    expect(declaredBody.stats()).toEqual({ bytesProduced: 0, pulls: 0, cancellations: 1 });
+
+    let slowCancellations = 0;
+    const slowBody = new ReadableStream<Uint8Array>({
+      pull() {
+        return new Promise<void>(() => {});
+      },
+      cancel() {
+        slowCancellations += 1;
+      },
+    });
+    const started = performance.now();
+    const slowResponse = await createPixelsHttpHandler({ bodyReadTimeoutMs: 20 })(
+      new Request("http://local/v1/evaluate", { method: "POST", body: slowBody }),
+    );
+    expect(slowResponse.status).toBe(408);
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(slowCancellations).toBe(1);
   });
 
   test("rejects compact PII before evaluation or authorized dispatch", async () => {

@@ -46,7 +46,6 @@ const asciiConfusableSkeletons = new Map<number, string>(
 );
 const MIXED_SCRIPT_CLASSIFICATION_WILDCARD = "?";
 const CONFUSABLE_TARGET_MARKER_START = 0xe000;
-const MAX_NORMALIZATION_ALIAS_TOKEN_LENGTH = 18;
 
 const nonAsciiNormalizationTargets = new Map<string, Set<string>>();
 for (const [source, target] of compactDataPairs(NON_ASCII_NORMALIZATION_CONFUSABLE_ALIAS_DATA)) {
@@ -397,7 +396,6 @@ for (const entry of compactDataPairs(ASCII_NORMALIZATION_CONFUSABLE_ALIAS_DATA))
 }
 
 function normalizationAliasesAt(token: string, offset: number): ReadonlyArray<readonly [string, string]> {
-  if (token.length > MAX_NORMALIZATION_ALIAS_TOKEN_LENGTH) return [];
   return (normalizationConfusableAliasesByInitial.get(token[offset] ?? "") ?? [])
     .filter(([source]) => token.startsWith(source, offset));
 }
@@ -414,10 +412,13 @@ function classificationTokenVariants(token: string): string[] {
   }
 
   const variants = new Set(markerVariants);
-  if (token.length > MAX_NORMALIZATION_ALIAS_TOKEN_LENGTH) return [...variants];
   for (const base of markerVariants) {
     for (let offset = 0; offset < base.length; offset += 1) {
       for (const [source, target] of normalizationAliasesAt(base, offset)) {
+        // Single-character aliases are already streamed inside each semantic
+        // word. Materialize only structural aliases that can span a semantic
+        // boundary (for example m -> rn across cellular|number).
+        if (source.length === 1 && target.length === 1) continue;
         variants.add(`${base.slice(0, offset)}${target}${base.slice(offset + source.length)}`);
       }
     }
@@ -446,37 +447,53 @@ function semanticVariantsAt(token: string, offset: number): ReadonlyArray<readon
   return variants;
 }
 
-function tokenVariantMatchEnds(token: string, variant: string, offset: number): number[] {
-  const memo = new Map<string, readonly number[]>();
+interface TokenVariantMatch {
+  readonly end: number;
+  readonly usedNormalizationAlias: boolean;
+}
 
-  function visit(tokenOffset: number, variantOffset: number): readonly number[] {
-    if (variantOffset === variant.length) return [tokenOffset];
+function tokenVariantMatches(token: string, variant: string, offset: number): TokenVariantMatch[] {
+  const memo = new Map<string, readonly TokenVariantMatch[]>();
+
+  function visit(tokenOffset: number, variantOffset: number): readonly TokenVariantMatch[] {
+    if (variantOffset === variant.length) {
+      return [{ end: tokenOffset, usedNormalizationAlias: false }];
+    }
     if (tokenOffset >= token.length) return [];
     const memoKey = `${tokenOffset}:${variantOffset}`;
     const cached = memo.get(memoKey);
     if (cached) return cached;
-    const ends = new Set<number>();
+    const matches = new Map<string, TokenVariantMatch>();
+    const add = (match: TokenVariantMatch) => {
+      matches.set(`${match.end}:${match.usedNormalizationAlias ? "1" : "0"}`, match);
+    };
     const character = token[tokenOffset];
     if (character === MIXED_SCRIPT_CLASSIFICATION_WILDCARD) {
-      for (const end of visit(tokenOffset + 1, variantOffset + 1)) ends.add(end);
+      for (const match of visit(tokenOffset + 1, variantOffset + 1)) add(match);
     } else if (confusableTargetMarkerTargets.has(character ?? "")) {
       for (const target of confusableTargetMarkerTargets.get(character!)!) {
         if (!variant.startsWith(target, variantOffset)) continue;
-        for (const end of visit(tokenOffset + 1, variantOffset + target.length)) ends.add(end);
+        for (const match of visit(tokenOffset + 1, variantOffset + target.length)) add(match);
       }
     } else if (character === variant[variantOffset]) {
-      for (const end of visit(tokenOffset + 1, variantOffset + 1)) ends.add(end);
+      for (const match of visit(tokenOffset + 1, variantOffset + 1)) add(match);
     }
     for (const [source, target] of normalizationAliasesAt(token, tokenOffset)) {
       if (!variant.startsWith(target, variantOffset)) continue;
-      for (const end of visit(tokenOffset + source.length, variantOffset + target.length)) ends.add(end);
+      for (const match of visit(tokenOffset + source.length, variantOffset + target.length)) {
+        add({ end: match.end, usedNormalizationAlias: true });
+      }
     }
-    const result = Object.freeze([...ends]);
+    const result = Object.freeze([...matches.values()]);
     memo.set(memoKey, result);
     return result;
   }
 
   return [...visit(offset, 0)];
+}
+
+function tokenVariantMatchEnds(token: string, variant: string, offset: number): number[] {
+  return [...new Set(tokenVariantMatches(token, variant, offset).map((match) => match.end))];
 }
 
 function segmentCompactPropertyToken(token: string): string[] | null {
@@ -518,6 +535,7 @@ interface SemanticPropertyRun {
   readonly start: number;
   readonly end: number;
   readonly tokens: readonly string[];
+  readonly usedNormalizationAlias: boolean;
 }
 
 const semanticPropertyRunCache = new Map<string, readonly SemanticPropertyRun[]>();
@@ -540,15 +558,21 @@ function semanticPropertyRuns(token: string): SemanticPropertyRun[] {
     let best: Omit<SemanticPropertyRun, "start"> | null = null;
 
     for (const [variant, canonical] of semanticVariantsAt(token, offset)) {
-      for (const nextOffset of tokenVariantMatchEnds(token, variant, offset)) {
-        const remainder = longestRunFrom(nextOffset);
+      for (const match of tokenVariantMatches(token, variant, offset)) {
+        const remainder = longestRunFrom(match.end);
         const candidate = {
-          end: remainder?.end ?? nextOffset,
+          end: remainder?.end ?? match.end,
           tokens: [canonical, ...(remainder?.tokens ?? [])],
+          usedNormalizationAlias: match.usedNormalizationAlias
+            || (remainder?.usedNormalizationAlias ?? false),
         };
         if (!best
           || candidate.end > best.end
-          || (candidate.end === best.end && candidate.tokens.length > best.tokens.length)) {
+          || (candidate.end === best.end && candidate.tokens.length > best.tokens.length)
+          || (candidate.end === best.end
+            && candidate.tokens.length === best.tokens.length
+            && candidate.usedNormalizationAlias
+            && !best.usedNormalizationAlias)) {
           best = candidate;
         }
       }
@@ -857,6 +881,26 @@ function isExplicitSafePhoneContext(tokens: readonly string[]): boolean {
       || isBoundedUnknownEntityModifier(token));
 }
 
+function hasExplicitSafePhoneIdentityContext(
+  key: string,
+  combinedIdentityTokens: readonly string[],
+): boolean {
+  const rawTokens = identityPropertyKeyTokens(key);
+  // Mixed-script target markers are intentionally never allowed to acquire a
+  // safe-entity identity through the more permissive classification skeleton.
+  if (rawTokens.some((token) => /[?\uE000-\uF8FF]/.test(token))) return false;
+  if (isExplicitSafePhoneContext(combinedIdentityTokens)) return true;
+
+  return rawTokens.some((rawToken) => semanticPropertyRuns(rawToken).some((run) => {
+    const candidate = [
+      ...(run.start > 0 ? [rawToken.slice(0, run.start)] : []),
+      ...run.tokens,
+      ...(run.end < rawToken.length ? [rawToken.slice(run.end)] : []),
+    ];
+    return isExplicitSafePhoneContext(candidate);
+  }));
+}
+
 function isPhoneSemanticPhrase(tokens: readonly string[]): boolean {
   const hasPhone = tokens.some((token) => directPhoneSemanticTokens.has(token));
   if (tokens.includes("cell") && tokens.includes("number")) return true;
@@ -924,8 +968,30 @@ function recognizedHighRiskRunTokens(rawToken: string): string[] {
   const runs = semanticPropertyRuns(rawToken);
   const recognized = new Set<string>();
   for (const run of runs) {
-    if (isHighRiskSemanticPhrase(run.tokens)
-      && (run.end === rawToken.length || isBoundedHighRiskAnchorPair(run.tokens))) {
+    const compact = run.tokens.join("");
+    const isDirectAliasedSensitiveRun = run.usedNormalizationAlias && (
+      run.tokens.some((token) => [
+        "address",
+        "email",
+        "street",
+        "zip",
+      ].includes(token))
+      || run.tokens.some((token) => directPhoneSemanticTokens.has(token))
+      || directHumanNameKeys.has(compact)
+      || (run.tokens.includes("postal") && run.tokens.includes("code"))
+      || (run.tokens.includes("user") && run.tokens.includes("agent"))
+      || (run.tokens.includes("ip") && run.tokens.some((token) => [
+        "address",
+        "client",
+        "remote",
+        "source",
+        "user",
+        "visitor",
+      ].includes(token)))
+    );
+    if (isDirectAliasedSensitiveRun
+      || (isHighRiskSemanticPhrase(run.tokens)
+        && (run.end === rawToken.length || isBoundedHighRiskAnchorPair(run.tokens)))) {
       run.tokens.forEach((token) => recognized.add(token));
     }
   }
@@ -1075,11 +1141,13 @@ function blockedPropertyKey(key: string, path: Array<string | number> = []): boo
   if (/(?:^|_)e_mail(?:_|$)/.test(normalized)) return true;
   if (recognizedTokens.some((token) => ["email", "address", "street", "zip"].includes(token))) return true;
   if (identityRecognizedTokens.some((token) => directPhoneSemanticTokens.has(token))
-    && isExplicitSafePhoneContext(identityRecognizedTokens)) return false;
+    && hasExplicitSafePhoneIdentityContext(key, identityRecognizedTokens)) return false;
   if (recognizedTokens.some((token) => directPhoneSemanticTokens.has(token))
     && !isExplicitSafePhoneContext(recognizedTokens)) return true;
   if (["contactnumber", "mobilenumber", "telephonenumber", "cellphonenumber"].includes(compact)) return true;
   if (blockedHumanNameKey(key, path)) return true;
+  if (recognizedTokens.includes("postal") && recognizedTokens.includes("code")) return true;
+  if (recognizedTokens.includes("user") && recognizedTokens.includes("agent")) return true;
   if (/(?:^|_)postal_code(?:_|$)/.test(normalized)) return true;
   if (/(?:^|_)user_agent(?:_|$)/.test(normalized)) return true;
   if (recognizedTokens.includes("ip")
@@ -1172,6 +1240,7 @@ const MAX_PROPERTY_CLASSIFICATION_CODE_POINTS = 4_096;
 const MAX_PROPERTY_CLASSIFICATION_WORK = 20_000;
 const WILDCARD_CLASSIFICATION_WORK = 1_024;
 const NORMALIZATION_ALIAS_CLASSIFICATION_WORK = 16;
+const ALIAS_DENSE_CLASSIFICATION_WORK = MAX_PROPERTY_CLASSIFICATION_WORK + 1;
 const TARGET_ALTERNATIVE_CLASSIFICATION_WORK = 2_048;
 
 interface PropertyClassificationBudget {
@@ -1197,6 +1266,10 @@ function consumePropertyClassificationKey(key: string, state: PropertyClassifica
   state.work += [...classified].length
     + wildcardCount * WILDCARD_CLASSIFICATION_WORK
     + normalizationAliasCount * NORMALIZATION_ALIAS_CLASSIFICATION_WORK
+    // Multiple alias paths per input character are the expensive case. Fail
+    // that density during linear metering without penalizing many ordinary
+    // keys that each contain one or two incidental ASCII alias sources.
+    + (normalizationAliasCount > classified.length ? ALIAS_DENSE_CLASSIFICATION_WORK : 0)
     + targetAlternativeCount * TARGET_ALTERNATIVE_CLASSIFICATION_WORK;
   state.exceeded = state.keys > MAX_PROPERTY_CLASSIFICATION_KEYS
     || state.codePoints > MAX_PROPERTY_CLASSIFICATION_CODE_POINTS
