@@ -8,7 +8,13 @@ export const PROVIDER_IDS = [
 
 export type ProviderId = typeof PROVIDER_IDS[number];
 export type ConsentPurpose = "analytics" | "advertising";
-export type PropertyValue = string | number | boolean | null;
+export type PropertyValue =
+  | string
+  | number
+  | boolean
+  | null
+  | PropertyValue[]
+  | { [key: string]: PropertyValue };
 
 export interface PixelEvent {
   name: string;

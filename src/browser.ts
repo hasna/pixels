@@ -12,6 +12,39 @@ import type {
 
 type MutableGlobal = typeof globalThis & Record<string, unknown>;
 
+type TikTokRuntime = Record<string, unknown> & {
+  page?: () => unknown;
+  track?: (name: string, properties?: Record<string, unknown>) => unknown;
+};
+
+type TikTokQueue = unknown[] & TikTokRuntime & {
+  _i: Record<string, unknown[]>;
+  _o: Record<string, Record<string, unknown>>;
+  _t: Record<string, number>;
+  methods: string[];
+  instance: (pixelId: string) => TikTokRuntime;
+  setAndDefer: (target: TikTokRuntime, method: string) => void;
+};
+
+const TIKTOK_METHODS = [
+  "page",
+  "track",
+  "identify",
+  "instances",
+  "debug",
+  "on",
+  "off",
+  "once",
+  "ready",
+  "alias",
+  "group",
+  "enableCookie",
+  "disableCookie",
+  "holdConsent",
+  "revokeConsent",
+  "grantConsent",
+] as const;
+
 export interface BrowserEnvironment {
   document: Document;
   global: MutableGlobal;
@@ -78,6 +111,38 @@ function ensureFbq(global: MutableGlobal): (...args: unknown[]) => unknown {
   return fbq;
 }
 
+function ensureTikTok(global: MutableGlobal, pixelId: string): TikTokRuntime {
+  global["TiktokAnalyticsObject"] = "ttq";
+  const existing = global["ttq"];
+  if (existing && !Array.isArray(existing) && (typeof existing === "object" || typeof existing === "function")) {
+    return existing as TikTokRuntime;
+  }
+
+  const queue = (Array.isArray(existing) ? existing : []) as TikTokQueue;
+  queue.methods ??= [...TIKTOK_METHODS];
+  queue.setAndDefer ??= (target, method) => {
+    if (typeof target[method] === "function") return;
+    target[method] = (...args: unknown[]) => {
+      const targetQueue = Array.isArray(target) ? target : queue;
+      return targetQueue.push([method, ...args]);
+    };
+  };
+  for (const method of queue.methods) queue.setAndDefer(queue, method);
+
+  queue._i ??= {};
+  queue._o ??= {};
+  queue._t ??= {};
+  const pixelQueue = queue._i[pixelId] ?? [];
+  for (const method of queue.methods) queue.setAndDefer(pixelQueue as unknown as TikTokRuntime, method);
+  Object.assign(pixelQueue, { _u: "https://analytics.tiktok.com/i18n/pixel/events.js" });
+  queue._i[pixelId] = pixelQueue;
+  queue._o[pixelId] ??= {};
+  queue._t[pixelId] ??= Date.now();
+  queue.instance ??= (id) => (queue._i[id] ?? []) as unknown as TikTokRuntime;
+  global["ttq"] = queue;
+  return queue;
+}
+
 function mappedMetaEvent(name: string): string | undefined {
   return ({
     page_view: "PageView",
@@ -111,8 +176,8 @@ export class BrowserPixelDispatcher implements PixelDispatcher {
       .find((script) => script.dataset["openPixelsKey"] === key);
     if (present?.dataset["loaded"] === "true") return Promise.resolve();
 
-    const promise = new Promise<void>((resolve, reject) => {
-      const script = present ?? this.environment.document.createElement("script");
+    const script = present ?? this.environment.document.createElement("script");
+    const attempt = new Promise<void>((resolve, reject) => {
       script.async = true;
       script.src = src;
       script.dataset["openPixelsKey"] = key;
@@ -124,8 +189,14 @@ export class BrowserPixelDispatcher implements PixelDispatcher {
       script.addEventListener("error", () => reject(new Error(`failed to load ${provider} script`)), { once: true });
       if (!present) this.environment.document.head.append(script);
     });
-    this.loadedScripts.set(key, promise);
-    return promise;
+    let tracked: Promise<void>;
+    tracked = attempt.catch((error: unknown) => {
+      if (this.loadedScripts.get(key) === tracked) this.loadedScripts.delete(key);
+      script.remove();
+      throw error;
+    });
+    this.loadedScripts.set(key, tracked);
+    return tracked;
   }
 
   async dispatch(provider: ProviderConfig, event: PixelEvent): Promise<void> {
@@ -172,12 +243,13 @@ export class BrowserPixelDispatcher implements PixelDispatcher {
         return;
       }
       case "tiktok": {
+        const initKey = `${provider.provider}:${provider.pixelId}`;
+        const ttq = ensureTikTok(this.environment.global, provider.pixelId);
         await this.loadScript(
           provider.provider,
           `https://analytics.tiktok.com/i18n/pixel/events.js?sdkid=${encodeURIComponent(provider.pixelId)}&lib=ttq`,
         );
-        const ttq = this.environment.global["ttq"] as { page?: () => unknown; track?: (name: string, properties?: Record<string, unknown>) => unknown } | undefined;
-        if (!ttq) throw new Error("TikTok pixel runtime did not initialize");
+        this.initialized.add(initKey);
         if (event.name === "page_view" && typeof ttq.page === "function") ttq.page();
         else if (typeof ttq.track === "function") ttq.track(event.name, event.properties ?? {});
         else throw new Error("TikTok pixel runtime cannot track events");

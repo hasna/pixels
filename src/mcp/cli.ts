@@ -18,6 +18,10 @@ function optionValue(args: string[], names: string[]): string | undefined {
   return index >= 0 ? args[index + 1] : undefined;
 }
 
+function optionValues(args: string[], name: string): string[] {
+  return args.flatMap((arg, index) => arg === name && args[index + 1] ? [args[index + 1] as string] : []);
+}
+
 function parsePort(value: string | undefined): number {
   if (value === undefined) return 8892;
   const port = Number.parseInt(value, 10);
@@ -33,6 +37,8 @@ Runs the read-only policy/evaluation MCP server over stdio by default.
 Options:
       --http             Serve Streamable HTTP on /mcp
       --host <hostname>  HTTP bind hostname (default: 127.0.0.1)
+      --allow-origin <origin>
+                         Permit an additional exact browser Origin (repeatable)
   -p, --port <port>      HTTP port (default: 8892)
   -V, --version          Show package version
   -h, --help             Show help`);
@@ -47,7 +53,8 @@ async function main(): Promise<void> {
     const { startPixelsMcpHttpServer } = await import("./http.js");
     const hostname = optionValue(args, ["--host"]) ?? "127.0.0.1";
     const port = parsePort(optionValue(args, ["--port", "-p"]));
-    startPixelsMcpHttpServer({ hostname, port, log: (message) => console.error(message) });
+    const allowedOrigins = optionValues(args, "--allow-origin");
+    startPixelsMcpHttpServer({ hostname, port, allowedOrigins, log: (message) => console.error(message) });
     await new Promise<never>(() => {});
   }
 

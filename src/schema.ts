@@ -1,18 +1,119 @@
+import { isIP } from "node:net";
 import { z } from "zod";
 import { PROVIDER_IDS } from "./types.js";
+import type { PropertyValue } from "./types.js";
 
 const identifier = z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 const eventName = z.string().min(1).max(64).regex(/^[A-Za-z][A-Za-z0-9_.:-]*$/);
-const propertyValue = z.union([
+const scalarPropertyValue = z.union([
   z.string().max(500),
   z.number().finite(),
   z.boolean(),
   z.null(),
 ]);
 
-const blockedPropertyKeys = /(?:^|[_-])(?:e-?mail|phone|first_?name|last_?name|full_?name|address|street|postal_?code|zip|ip|user_?agent)(?:$|[_-])/i;
-const directEmailValue = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const directPhoneValue = /^\+?[1-9][0-9]{7,14}$/;
+function buildPropertyValueSchema(depth: number): z.ZodType<PropertyValue> {
+  if (depth === 0) return scalarPropertyValue;
+  const nested = buildPropertyValueSchema(depth - 1);
+  return z.union([
+    scalarPropertyValue,
+    z.array(nested).max(20),
+    z.record(z.string().min(1).max(64), nested).refine(
+      (value) => Object.keys(value).length <= 50,
+      "nested property objects may contain at most 50 keys",
+    ),
+  ]);
+}
+
+const propertyValue = buildPropertyValueSchema(4);
+const embeddedEmailValue = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}/i;
+
+function propertyKeyTokens(key: string): string[] {
+  return key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+function blockedPropertyKey(key: string): boolean {
+  const tokens = propertyKeyTokens(key);
+  const normalized = tokens.join("_");
+  if (/(?:^|_)e_mail(?:_|$)/.test(normalized)) return true;
+  if (tokens.some((token) => ["email", "phone", "address", "street", "zip"].includes(token))) return true;
+  if (/(?:^|_)(?:first|last|full)_name(?:_|$)/.test(normalized)) return true;
+  if (/(?:^|_)postal_code(?:_|$)/.test(normalized)) return true;
+  if (/(?:^|_)user_agent(?:_|$)/.test(normalized)) return true;
+  if (normalized === "ip" || /(?:^|_)(?:client|remote|source|user|visitor)_ip(?:_|$)/.test(normalized)) return true;
+  return /(?:^|_)ip_address(?:_|$)/.test(normalized);
+}
+
+function containsPhone(value: string): boolean {
+  const candidates = value.match(/\+?\d[\d\s().-]{6,}\d/g) ?? [];
+  return candidates.some((candidate) => {
+    if (/^\d{4}[-.]\d{2}[-.]\d{2}$/.test(candidate.trim())) return false;
+    if (/^(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/.test(candidate.trim())) return false;
+    const digits = candidate.replace(/\D/g, "");
+    if (digits.length < 8 || digits.length > 15) return false;
+    return candidate.includes("+") || /[\s().-]/.test(candidate) || candidate.trim() === value.trim();
+  });
+}
+
+function containsIpAddress(value: string): boolean {
+  const candidates = value.split(/[\s,;()[\]{}<>"'=/?#]+/).filter(Boolean);
+  return candidates.some((candidate) => {
+    if (isIP(candidate) !== 0) return true;
+    const withoutZone = candidate.replace(/%[^:]+$/, "");
+    if (isIP(withoutZone) !== 0) return true;
+    const withoutPort = withoutZone.match(/^(.+):\d{1,5}$/)?.[1];
+    if (withoutPort && isIP(withoutPort) !== 0) return true;
+    return isIP(withoutZone.replace(/^[.,]+|[.,]+$/g, "")) !== 0;
+  });
+}
+
+function inspectPropertyValue(
+  value: PropertyValue,
+  path: Array<string | number>,
+  context: z.RefinementCtx,
+  state: { nodes: number; overLimit: boolean },
+): void {
+  state.nodes += 1;
+  if (state.nodes > 200) {
+    if (!state.overLimit) {
+      state.overLimit = true;
+      context.addIssue({ code: "custom", message: "properties may contain at most 200 values", path });
+    }
+    return;
+  }
+  if (typeof value === "string") {
+    if (embeddedEmailValue.test(value) || containsPhone(value) || containsIpAddress(value)) {
+      context.addIssue({
+        code: "custom",
+        message: "property appears to contain direct personal information and is not allowed",
+        path,
+      });
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => inspectPropertyValue(item, [...path, index], context, state));
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      const itemPath = [...path, key];
+      if (blockedPropertyKey(key)) {
+        context.addIssue({
+          code: "custom",
+          message: `property ${key} may contain direct personal information and is not allowed`,
+          path: itemPath,
+        });
+      }
+      inspectPropertyValue(item, itemPath, context, state);
+    }
+  }
+}
 const httpUrl = z.url().max(2048).refine((value) => {
   const protocol = new URL(value).protocol;
   return protocol === "http:" || protocol === "https:";
@@ -33,21 +134,16 @@ export const pixelEventSchema = z.object({
   if (entries.length > 50) {
     context.addIssue({ code: "custom", message: "properties may contain at most 50 keys", path: ["properties"] });
   }
+  const state = { nodes: 0, overLimit: false };
   for (const [key, value] of entries) {
-    if (blockedPropertyKeys.test(key)) {
+    if (blockedPropertyKey(key)) {
       context.addIssue({
         code: "custom",
         message: `property ${key} may contain direct personal information and is not allowed`,
         path: ["properties", key],
       });
     }
-    if (typeof value === "string" && (directEmailValue.test(value) || directPhoneValue.test(value))) {
-      context.addIssue({
-        code: "custom",
-        message: `property ${key} appears to contain direct personal information and is not allowed`,
-        path: ["properties", key],
-      });
-    }
+    inspectPropertyValue(value, ["properties", key], context, state);
   }
 });
 

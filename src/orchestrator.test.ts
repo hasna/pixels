@@ -59,10 +59,41 @@ describe("evaluatePixelEvent", () => {
     expect(output.decisions.every((decision) => decision.reason === "provider_event_unmapped")).toBeTrue();
   });
 
-  test("rejects direct PII property names and duplicate providers", () => {
+  test("rejects direct PII keys, embedded values, IP addresses, and nested variants", () => {
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { email: "person@example.test" } } }))).toThrow();
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { contact: "person@example.test" } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { contact: "send to person@example.test now" } } }))).toThrow();
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { contact: "+15551234567" } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { contact: "call (555) 123-4567 today" } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { clientIp: "203.0.113.42" } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { server: "203.0.113.42:443" } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { server: "fe80::1%eth0" } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { eMail: "redacted" } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { "e-mail": "redacted" } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { IPAddress: "redacted" } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { userAgent: "redacted" } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { metadata: { remoteAddress: "2001:db8::1" } } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { profile: { firstName: "Ada" } } } }))).toThrow();
+  });
+
+  test("accepts safe identifiers, dotted versions, and email-like non-address text", () => {
+    expect(() => evaluatePixelEvent(request({
+      event: {
+        name: "page_view",
+        properties: {
+          campaign: "spring@example",
+          release: "version 1.2.3",
+          publishDate: "2026-07-15",
+          compactDate: "20260715",
+          releaseTrain: "2026.07.15",
+          orderId: "order_12345678",
+          network: { ipVersion: "IPv6", regions: ["north", "west"] },
+        },
+      },
+    }))).not.toThrow();
+  });
+
+  test("rejects duplicate providers", () => {
     expect(() => evaluatePixelEvent(request({ providers: [ga, ga] }))).toThrow();
   });
 

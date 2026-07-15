@@ -31,6 +31,10 @@
     "./mcp": {
       "types": "./dist/mcp/server.d.ts",
       "import": "./dist/mcp/server.js"
+    },
+    "./mcp/http": {
+      "types": "./dist/mcp/http.d.ts",
+      "import": "./dist/mcp/http.js"
     }
   },
   "files": [
@@ -72,7 +76,6 @@
   "author": "Hasna Inc.",
   "license": "Apache-2.0",
   "dependencies": {
-    "@hasna/mcp-harness": "^0.1.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.3.6"
   },

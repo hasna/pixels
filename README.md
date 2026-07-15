@@ -9,7 +9,7 @@ It is deliberately fail-closed:
 - analytics and advertising consent are evaluated separately;
 - Global Privacy Control and Do Not Track override consent by default;
 - Google Ads and LinkedIn conversions require explicit event mappings;
-- direct-PII-looking event property names are rejected;
+- direct-PII-looking event property names and embedded email, phone, and IP values are rejected recursively;
 - only built-in providers with fixed script origins can dispatch;
 - the HTTP event route cannot dispatch unless both an authorizer and dispatcher are configured.
 
@@ -123,9 +123,21 @@ pixels-mcp --http          # Streamable HTTP at http://127.0.0.1:8892/mcp
 
 The HTTP transport also exposes `GET /health`.
 
+Streamable HTTP binds to loopback by default, rejects unapproved browser `Origin` headers, and permits local origins plus exact origins configured with repeatable `--allow-origin` flags. Library consumers may supply an `authorize` callback; non-loopback binding fails closed unless that callback is present. The CLI intentionally provides no non-loopback authentication backend, so `--host 0.0.0.0` is rejected.
+
+```ts
+import { startPixelsMcpHttpServer } from "@hasna/pixels/mcp/http";
+
+startPixelsMcpHttpServer({
+  hostname: "10.0.0.10",
+  allowedOrigins: ["https://console.example"],
+  authorize: (request) => verifyRequest(request),
+});
+```
+
 ## Privacy boundary
 
-Open Pixels is a technical enforcement layer, not legal advice or a complete consent-management platform. Applications remain responsible for their notices, retention, data processing agreements, geographic requirements, and correct classification of each provider. Never put secrets or direct personal information in browser-visible provider configuration or event properties.
+Open Pixels is a technical enforcement layer, not legal advice or a complete consent-management platform. Its PII checks are bounded heuristics for common direct identifiers, not exhaustive classification or compliance proof. Applications remain responsible for their notices, retention, data processing agreements, geographic requirements, and correct classification of each provider. Never put secrets or direct personal information in browser-visible provider configuration or event properties.
 
 ## Development
 
