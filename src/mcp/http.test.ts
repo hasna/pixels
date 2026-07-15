@@ -77,6 +77,24 @@ describe("MCP HTTP transport", () => {
     expect(await unavailable.text()).not.toContain("private backend detail");
   });
 
+  test("does not authorize or initialize a pre-aborted request", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let authorizationCalls = 0;
+    const base = initializeRequest();
+    const aborted = new Request(base, { signal: controller.signal });
+
+    const response = await handlePixelsMcpHttpRequest(aborted, {
+      authorize: () => {
+        authorizationCalls += 1;
+        return true;
+      },
+    });
+
+    expect(response.status).toBe(408);
+    expect(authorizationCalls).toBe(0);
+  });
+
   test("refuses non-loopback binding without an explicit authentication policy", () => {
     let server: ReturnType<typeof Bun.serve> | undefined;
     try {

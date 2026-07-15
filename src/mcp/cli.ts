@@ -1,17 +1,6 @@
 #!/usr/bin/env bun
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-
-function version(): string {
-  try {
-    const path = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
-    return (JSON.parse(readFileSync(path, "utf8")) as { version?: string }).version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
+import { packageVersion } from "./version.js";
 
 function optionValue(args: string[], names: string[]): string | undefined {
   const index = args.findIndex((arg) => names.includes(arg));
@@ -47,7 +36,7 @@ Options:
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.includes("--help") || args.includes("-h")) return help();
-  if (args.includes("--version") || args.includes("-V")) return console.log(version());
+  if (args.includes("--version") || args.includes("-V")) return console.log(packageVersion());
 
   if (args.includes("--http")) {
     const { startPixelsMcpHttpServer } = await import("./http.js");

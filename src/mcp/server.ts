@@ -4,6 +4,7 @@ import { z } from "zod";
 import { evaluatePixelEvent } from "../orchestrator.js";
 import { listProviders } from "../providers.js";
 import { configurationSchema, evaluationRequestSchema } from "../schema.js";
+import { packageVersion } from "./version.js";
 
 function result(value: Record<string, unknown>): CallToolResult {
   return {
@@ -19,7 +20,7 @@ function resource(uri: string, value: unknown) {
 }
 
 export function buildPixelsMcpServer(): McpServer {
-  const server = new McpServer({ name: "pixels", version: "0.1.0" });
+  const server = new McpServer({ name: "pixels", version: packageVersion() });
 
   server.registerResource(
     "pixel-providers",

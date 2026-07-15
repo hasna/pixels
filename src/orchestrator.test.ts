@@ -77,6 +77,12 @@ describe("evaluatePixelEvent", () => {
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { userAgent: "redacted" } } }))).toThrow();
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { metadata: { remoteAddress: "2001:db8::1" } } } }))).toThrow();
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { profile: { firstName: "Ada" } } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { profile: { firstname: "Ada" } } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { profile: { name: "Ada" } } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { contact: { value: 15551234567 } } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { profile: { mobile: { value: 15551234567 } } } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { phones: [15551234567] } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { note: "call 15551234567 now" } } }))).toThrow();
   });
 
   test("accepts safe identifiers, dotted versions, and email-like non-address text", () => {
@@ -90,6 +96,8 @@ describe("evaluatePixelEvent", () => {
           compactDate: "20260715",
           releaseTrain: "2026.07.15",
           orderId: "order_12345678",
+          numericStringOrderId: "15551234567",
+          nestedNumericOrderId: { orderId: "15551234567" },
           numericOrderId: 15551234567,
           amount: 15551234567,
           counter: 15551234567,

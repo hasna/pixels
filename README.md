@@ -71,6 +71,8 @@ await client.track(
 
 Scripts are loaded only after the event passes policy, consent, privacy-signal, and schema checks. Revoking consent prevents future dispatch; it cannot undo data already sent or unload a third-party script, so applications should also reset/reload their page when their consent design requires that behavior.
 
+Provider events remain account-scoped when several applications share the same page globals: Google Analytics events include the destination measurement ID in `send_to`, Meta events use `trackSingle`/`trackSingleCustom` with the configured pixel ID, and TikTok events use the official `ttq.instance(pixelId)` runtime rather than the global fan-out methods. Each site must still receive its own server-owned provider configuration; do not copy account IDs between tenants.
+
 The browser SDK loads only the fixed origins returned by `listProviders()`. Production Content Security Policy must explicitly allow the selected providers' script, connection, and image endpoints. Deployments that require script nonces should integrate and approve provider loading in their own CSP-aware boundary. Treat provider load failures as observable delivery failures and retry only after confirming consent remains granted.
 
 ## Provider mappings
@@ -144,6 +146,8 @@ startPixelsMcpHttpServer({
 ## Privacy boundary
 
 Open Pixels is a technical enforcement layer, not legal advice or a complete consent-management platform. Its PII checks are bounded heuristics for common direct identifiers, not exhaustive classification or compliance proof. Applications remain responsible for their notices, retention, data processing agreements, geographic requirements, and correct classification of each provider. Never put secrets or direct personal information in browser-visible provider configuration or event properties.
+
+The recursive guard rejects common direct-name keys, phone/contact ancestry (including nested values and numeric arrays), embedded email/IP/phone values, and formatted phone values. It deliberately permits ordinary amounts, counters, and identifier fields such as numeric-string order IDs; callers must not use those fields to disguise personal information.
 
 ## Development
 

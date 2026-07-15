@@ -69,7 +69,32 @@ describe("browser dispatcher", () => {
     expect(scripts).toHaveLength(1);
     expect(scripts[0]?.["src"]).toBe("https://www.googletagmanager.com/gtag/js?id=G-ABC12345");
     const dataLayer = globals["dataLayer"] as unknown[][];
-    expect(dataLayer.some((entry) => entry[0] === "event" && entry[1] === "page_view")).toBeTrue();
+    expect(dataLayer).toContainEqual([
+      "event",
+      "page_view",
+      { section: "news", event_id: undefined, send_to: "G-ABC12345" },
+    ]);
+  });
+
+  test("scopes Google Analytics events when two properties share gtag", async () => {
+    const { environment, globals } = fakeEnvironment();
+    const first = new BrowserPixelDispatcher(environment);
+    const second = new BrowserPixelDispatcher(environment);
+
+    await first.dispatch(
+      { provider: "google-analytics", enabled: true, measurementId: "G-FIRST123" },
+      { name: "page_view", eventId: "first-event" },
+    );
+    await second.dispatch(
+      { provider: "google-analytics", enabled: true, measurementId: "G-SECOND12" },
+      { name: "page_view", eventId: "second-event" },
+    );
+
+    const events = (globals["dataLayer"] as unknown[][]).filter((entry) => entry[0] === "event");
+    expect(events).toEqual([
+      ["event", "page_view", { event_id: "first-event", send_to: "G-FIRST123" }],
+      ["event", "page_view", { event_id: "second-event", send_to: "G-SECOND12" }],
+    ]);
   });
 
   test("dispatches Google Ads only through an explicit conversion mapping", async () => {
@@ -159,8 +184,8 @@ describe("browser dispatcher", () => {
     expect(fbq.queue).toEqual([]);
     expect(runtimeCalls).toEqual([
       ["init", provider.pixelId],
-      ["track", "PageView", {}, { eventID: "page-1" }],
-      ["trackCustom", "newsletter_signup", { placement: "footer" }, { eventID: "signup-1" }],
+      ["trackSingle", provider.pixelId, "PageView", {}, { eventID: "page-1" }],
+      ["trackSingleCustom", provider.pixelId, "newsletter_signup", { placement: "footer" }, { eventID: "signup-1" }],
     ]);
     expect(scripts).toHaveLength(1);
   });
@@ -187,8 +212,35 @@ describe("browser dispatcher", () => {
     await dispatcher.dispatch(provider, { name: "page_view" });
 
     expect(runtimeCalls.filter((call) => call[0] === "init")).toHaveLength(1);
-    expect(runtimeCalls.filter((call) => call[0] === "track" && call[1] === "PageView")).toHaveLength(1);
+    expect(runtimeCalls.filter((call) => call[0] === "trackSingle" && call[2] === "PageView")).toHaveLength(1);
     expect(scripts).toHaveLength(1);
+  });
+
+  test("scopes Meta events when two pixels share fbq", async () => {
+    const runtimeCalls: unknown[][] = [];
+    const { environment } = fakeEnvironment({
+      onScriptLoad(currentGlobals) {
+        const fbq = currentGlobals["fbq"] as ((...args: unknown[]) => unknown) & {
+          callMethod?: (...args: unknown[]) => unknown;
+          queue: unknown[][];
+        };
+        const queued = [...fbq.queue];
+        fbq.callMethod = (...args: unknown[]) => runtimeCalls.push(args);
+        fbq.queue.length = 0;
+        for (const args of queued) fbq.callMethod(...args);
+      },
+    });
+    const first = new BrowserPixelDispatcher(environment);
+    const second = new BrowserPixelDispatcher(environment);
+
+    await first.dispatch({ provider: "meta", enabled: true, pixelId: "111111111" }, { name: "page_view" });
+    await second.dispatch({ provider: "meta", enabled: true, pixelId: "222222222" }, { name: "lead" });
+
+    expect(runtimeCalls.filter((call) => call[0] === "track" || call[0] === "trackCustom")).toEqual([]);
+    expect(runtimeCalls.filter((call) => String(call[0]).startsWith("trackSingle"))).toEqual([
+      ["trackSingle", "111111111", "PageView", {}, { eventID: undefined }],
+      ["trackSingle", "222222222", "Lead", {}, { eventID: undefined }],
+    ]);
   });
 
   test("does not bootstrap or load TikTok before advertising consent", async () => {
@@ -230,10 +282,48 @@ describe("browser dispatcher", () => {
     expect(typeof pixelInstance["track"]).toBe("function");
     (pixelInstance["track"] as (name: string) => unknown)("instance_event");
     expect(queue._i[provider.pixelId]?.some((item) => Array.isArray(item) && item[0] === "track" && item[1] === "instance_event")).toBeTrue();
-    expect(queue.some((item) => Array.isArray(item) && item[0] === "page")).toBeTrue();
-    expect(queue.some((item) => Array.isArray(item) && item[0] === "track" && item[1] === "newsletter_signup")).toBeTrue();
+    expect(queue._i[provider.pixelId]?.some((item) => Array.isArray(item) && item[0] === "page")).toBeTrue();
+    expect(queue._i[provider.pixelId]?.some((item) => Array.isArray(item) && item[0] === "track" && item[1] === "newsletter_signup")).toBeTrue();
+    expect(queue.some((item) => Array.isArray(item) && (item[0] === "page" || item[0] === "track"))).toBeFalse();
     expect(scripts).toHaveLength(1);
     expect(dispatcher.initialized.has(`tiktok:${provider.pixelId}`)).toBeTrue();
+  });
+
+  test("hands TikTok events to the loaded per-pixel runtime without global fan-out", async () => {
+    const callsByPixel = new Map<string, unknown[][]>();
+    const globalCalls: unknown[][] = [];
+    const { environment } = fakeEnvironment({
+      onScriptLoad(globals) {
+        const queue = globals["ttq"] as unknown[] & {
+          instance: (pixelId: string) => Record<string, unknown>;
+          page?: (...args: unknown[]) => unknown;
+          track?: (...args: unknown[]) => unknown;
+        };
+        queue.page = (...args: unknown[]) => globalCalls.push(["page", ...args]);
+        queue.track = (...args: unknown[]) => globalCalls.push(["track", ...args]);
+        queue.instance = (pixelId) => ({
+          page: (...args: unknown[]) => {
+            const calls = callsByPixel.get(pixelId) ?? [];
+            calls.push(["page", ...args]);
+            callsByPixel.set(pixelId, calls);
+          },
+          track: (...args: unknown[]) => {
+            const calls = callsByPixel.get(pixelId) ?? [];
+            calls.push(["track", ...args]);
+            callsByPixel.set(pixelId, calls);
+          },
+        });
+      },
+    });
+    const first = new BrowserPixelDispatcher(environment);
+    const second = new BrowserPixelDispatcher(environment);
+
+    await first.dispatch({ provider: "tiktok", enabled: true, pixelId: "TTPIXEL1111" }, { name: "page_view" });
+    await second.dispatch({ provider: "tiktok", enabled: true, pixelId: "TTPIXEL2222" }, { name: "lead" });
+
+    expect(globalCalls).toEqual([]);
+    expect(callsByPixel.get("TTPIXEL1111")).toEqual([["page"]]);
+    expect(callsByPixel.get("TTPIXEL2222")).toEqual([["track", "lead", {}]]);
   });
 
   test("evicts a failed TikTok script load so a later dispatch can retry", async () => {

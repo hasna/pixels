@@ -51,8 +51,9 @@
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "check": "bun run typecheck && bun test && bun run build && bun run verify:release",
+    "check": "bun run typecheck && bun test && bun run build && bun run verify:release && bun run verify:browser-package",
     "verify:release": "bun run scripts/verify-release.ts",
+    "verify:browser-package": "bun run scripts/verify-browser-package.ts",
     "dev:cli": "bun run src/cli.ts",
     "dev:mcp": "bun run src/mcp/cli.ts",
     "prepack": "bun run check"
@@ -81,6 +82,7 @@
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",
+    "esbuild": "0.28.1",
     "typescript": "^6.0.3"
   }
 }

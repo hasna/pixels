@@ -21,6 +21,7 @@ type MetaPixelQueue = ((...args: unknown[]) => unknown) & {
 };
 
 type TikTokRuntime = Record<string, unknown> & {
+  instance?: (pixelId: string) => TikTokRuntime;
   page?: () => unknown;
   track?: (name: string, properties?: Record<string, unknown>) => unknown;
 };
@@ -128,7 +129,10 @@ function ensureTikTok(global: MutableGlobal, pixelId: string): TikTokRuntime {
   global["TiktokAnalyticsObject"] = "ttq";
   const existing = global["ttq"];
   if (existing && !Array.isArray(existing) && (typeof existing === "object" || typeof existing === "function")) {
-    return existing as TikTokRuntime;
+    const runtime = existing as TikTokRuntime;
+    const pixelRuntime = runtime.instance?.(pixelId);
+    if (!pixelRuntime) throw new Error("TikTok runtime does not expose a per-pixel instance");
+    return pixelRuntime;
   }
 
   const queue = (Array.isArray(existing) ? existing : []) as TikTokQueue;
@@ -153,7 +157,14 @@ function ensureTikTok(global: MutableGlobal, pixelId: string): TikTokRuntime {
   queue._t[pixelId] ??= Date.now();
   queue.instance ??= (id) => (queue._i[id] ?? []) as unknown as TikTokRuntime;
   global["ttq"] = queue;
-  return queue;
+  return queue.instance(pixelId);
+}
+
+function currentTikTokInstance(global: MutableGlobal, pixelId: string): TikTokRuntime {
+  const runtime = global["ttq"] as TikTokRuntime | undefined;
+  const instance = runtime?.instance?.(pixelId);
+  if (!instance) throw new Error("TikTok runtime does not expose a per-pixel instance");
+  return instance;
 }
 
 function mappedMetaEvent(name: string): string | undefined {
@@ -223,7 +234,11 @@ export class BrowserPixelDispatcher implements PixelDispatcher {
           this.initialized.add(initKey);
         }
         await this.loadScript(provider.provider, `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(provider.measurementId)}`);
-        gtag("event", event.name, { ...(event.properties ?? {}), event_id: event.eventId });
+        gtag("event", event.name, {
+          ...(event.properties ?? {}),
+          event_id: event.eventId,
+          send_to: provider.measurementId,
+        });
         return;
       }
       case "google-ads": {
@@ -252,17 +267,24 @@ export class BrowserPixelDispatcher implements PixelDispatcher {
         }
         await this.loadScript(provider.provider, "https://connect.facebook.net/en_US/fbevents.js");
         const mapped = mappedMetaEvent(event.name);
-        fbq(mapped ? "track" : "trackCustom", mapped ?? event.name, event.properties ?? {}, { eventID: event.eventId });
+        fbq(
+          mapped ? "trackSingle" : "trackSingleCustom",
+          provider.pixelId,
+          mapped ?? event.name,
+          event.properties ?? {},
+          { eventID: event.eventId },
+        );
         return;
       }
       case "tiktok": {
         const initKey = `${provider.provider}:${provider.pixelId}`;
-        const ttq = ensureTikTok(this.environment.global, provider.pixelId);
+        ensureTikTok(this.environment.global, provider.pixelId);
         await this.loadScript(
           provider.provider,
           `https://analytics.tiktok.com/i18n/pixel/events.js?sdkid=${encodeURIComponent(provider.pixelId)}&lib=ttq`,
         );
         this.initialized.add(initKey);
+        const ttq = currentTikTokInstance(this.environment.global, provider.pixelId);
         if (event.name === "page_view" && typeof ttq.page === "function") ttq.page();
         else if (typeof ttq.track === "function") ttq.track(event.name, event.properties ?? {});
         else throw new Error("TikTok pixel runtime cannot track events");

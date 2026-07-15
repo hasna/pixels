@@ -13,6 +13,11 @@ export interface PixelsMcpHttpServerOptions extends PixelsMcpHttpOptions {
   log?: (message: string) => void;
 }
 
+export interface PixelsMcpHttpServer {
+  readonly port: number | undefined;
+  stop(closeActiveConnections?: boolean): void;
+}
+
 const SECURITY_HEADERS = {
   "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff",
@@ -61,6 +66,7 @@ export async function handlePixelsMcpHttpRequest(
   request: Request,
   options: PixelsMcpHttpOptions = {},
 ): Promise<Response> {
+  if (request.signal.aborted) return securityResponse(408, "request aborted");
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/health") {
     return Response.json({ status: "ok", name: "pixels" }, {
@@ -89,7 +95,7 @@ export async function handlePixelsMcpHttpRequest(
   }
 }
 
-export function startPixelsMcpHttpServer(options: PixelsMcpHttpServerOptions = {}): ReturnType<typeof Bun.serve> {
+export function startPixelsMcpHttpServer(options: PixelsMcpHttpServerOptions = {}): PixelsMcpHttpServer {
   const hostname = options.hostname ?? "127.0.0.1";
   const port = options.port ?? 8892;
   if (!isLoopbackHostname(hostname) && !options.authorize) {

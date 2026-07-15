@@ -12,6 +12,11 @@ export interface PixelsApiOptions {
   corsOrigin?: string;
 }
 
+export interface PixelsHttpServer {
+  readonly port: number | undefined;
+  stop(closeActiveConnections?: boolean): void;
+}
+
 function responseHeaders(options: PixelsApiOptions): HeadersInit {
   return {
     "Cache-Control": "no-store",
@@ -113,7 +118,7 @@ export function createPixelsHttpHandler(options: PixelsApiOptions = {}): (reques
   };
 }
 
-export function startPixelsApi(options: PixelsApiOptions & { hostname?: string; port?: number; log?: (message: string) => void } = {}): ReturnType<typeof Bun.serve> {
+export function startPixelsApi(options: PixelsApiOptions & { hostname?: string; port?: number; log?: (message: string) => void } = {}): PixelsHttpServer {
   const hostname = options.hostname ?? "127.0.0.1";
   const port = options.port ?? 8891;
   const server = Bun.serve({ hostname, port, fetch: createPixelsHttpHandler(options) });

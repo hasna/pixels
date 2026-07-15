@@ -1,4 +1,3 @@
-import { isIP } from "node:net";
 import { z } from "zod";
 import { PROVIDER_IDS } from "./types.js";
 import type { PropertyValue } from "./types.js";
@@ -37,12 +36,21 @@ function propertyKeyTokens(key: string): string[] {
     .filter(Boolean);
 }
 
+function singularPropertyToken(token: string): string {
+  if (["phones", "mobiles", "telephones", "addresses", "names", "emails"].includes(token)) {
+    return token.slice(0, -1);
+  }
+  return token;
+}
+
 function blockedPropertyKey(key: string): boolean {
-  const tokens = propertyKeyTokens(key);
+  const tokens = propertyKeyTokens(key).map(singularPropertyToken);
   const normalized = tokens.join("_");
+  const compact = tokens.join("");
   if (/(?:^|_)e_mail(?:_|$)/.test(normalized)) return true;
   if (tokens.some((token) => ["email", "phone", "address", "street", "zip"].includes(token))) return true;
   if (/(?:^|_)(?:first|last|full)_name(?:_|$)/.test(normalized)) return true;
+  if (["name", "firstname", "lastname", "fullname"].includes(compact)) return true;
   if (/(?:^|_)postal_code(?:_|$)/.test(normalized)) return true;
   if (/(?:^|_)user_agent(?:_|$)/.test(normalized)) return true;
   if (normalized === "ip" || /(?:^|_)(?:client|remote|source|user|visitor)_ip(?:_|$)/.test(normalized)) return true;
@@ -50,7 +58,7 @@ function blockedPropertyKey(key: string): boolean {
 }
 
 function numericPhonePropertyKey(key: string): boolean {
-  const tokens = propertyKeyTokens(key);
+  const tokens = propertyKeyTokens(key).map(singularPropertyToken);
   const normalized = tokens.join("_");
   if (tokens.some((token) => ["phone", "mobile", "telephone", "tel", "cellphone"].includes(token))) {
     return !tokens.some((token) => ["count", "id", "index", "rank", "total"].includes(token));
@@ -58,34 +66,72 @@ function numericPhonePropertyKey(key: string): boolean {
   return ["contact", "contact_number", "contact_value"].includes(normalized);
 }
 
+function safeNumericIdentifierKey(key: string): boolean {
+  const tokens = propertyKeyTokens(key);
+  return tokens.some((token) => ["id", "count", "index", "rank", "total", "amount", "price", "quantity"].includes(token));
+}
+
+function hasNumericPhoneContext(path: Array<string | number>): boolean {
+  const propertyKeys = path.filter((item): item is string => typeof item === "string");
+  const nearestKey = propertyKeys.at(-1);
+  if (nearestKey && safeNumericIdentifierKey(nearestKey)) return false;
+  return propertyKeys.some(numericPhonePropertyKey);
+}
+
 function isNumericPhone(value: number, path: Array<string | number>): boolean {
   if (!Number.isSafeInteger(value) || value < 0) return false;
-  const propertyKey = path.findLast((item): item is string => typeof item === "string");
-  if (!propertyKey || !numericPhonePropertyKey(propertyKey)) return false;
+  if (!hasNumericPhoneContext(path)) return false;
   const digits = String(value);
   return digits.length >= 8 && digits.length <= 15;
 }
 
-function containsPhone(value: string): boolean {
+function containsPhone(value: string, path: Array<string | number>): boolean {
+  const propertyKeys = path.filter((item): item is string => typeof item === "string");
+  const nearestKey = propertyKeys.at(-1);
   const candidates = value.match(/\+?\d[\d\s().-]{6,}\d/g) ?? [];
   return candidates.some((candidate) => {
     if (/^\d{4}[-.]\d{2}[-.]\d{2}$/.test(candidate.trim())) return false;
     if (/^(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/.test(candidate.trim())) return false;
     const digits = candidate.replace(/\D/g, "");
     if (digits.length < 8 || digits.length > 15) return false;
-    return candidate.includes("+") || /[\s().-]/.test(candidate) || candidate.trim() === value.trim();
+    if (candidate.includes("+") || /[\s().-]/.test(candidate)) return true;
+    if (nearestKey && safeNumericIdentifierKey(nearestKey)) return false;
+    if (candidate.trim() !== value.trim()) return true;
+    return hasNumericPhoneContext(path);
   });
+}
+
+function isIpv4Address(value: string): boolean {
+  const octets = value.split(".");
+  return octets.length === 4 && octets.every((octet) => {
+    if (!/^(?:0|[1-9]\d{0,2})$/.test(octet)) return false;
+    return Number(octet) <= 255;
+  });
+}
+
+function isIpv6Address(value: string): boolean {
+  if (!value.includes(":")) return false;
+  try {
+    const parsed = new URL(`http://[${value}]/`);
+    return parsed.hostname.startsWith("[") && parsed.hostname.endsWith("]");
+  } catch {
+    return false;
+  }
+}
+
+function isIpAddress(value: string): boolean {
+  return isIpv4Address(value) || isIpv6Address(value);
 }
 
 function containsIpAddress(value: string): boolean {
   const candidates = value.split(/[\s,;()[\]{}<>"'=/?#]+/).filter(Boolean);
   return candidates.some((candidate) => {
-    if (isIP(candidate) !== 0) return true;
+    if (isIpAddress(candidate)) return true;
     const withoutZone = candidate.replace(/%[^:]+$/, "");
-    if (isIP(withoutZone) !== 0) return true;
+    if (isIpAddress(withoutZone)) return true;
     const withoutPort = withoutZone.match(/^(.+):\d{1,5}$/)?.[1];
-    if (withoutPort && isIP(withoutPort) !== 0) return true;
-    return isIP(withoutZone.replace(/^[.,]+|[.,]+$/g, "")) !== 0;
+    if (withoutPort && isIpAddress(withoutPort)) return true;
+    return isIpAddress(withoutZone.replace(/^[.,]+|[.,]+$/g, ""));
   });
 }
 
@@ -104,7 +150,7 @@ function inspectPropertyValue(
     return;
   }
   if (typeof value === "string") {
-    if (embeddedEmailValue.test(value) || containsPhone(value) || containsIpAddress(value)) {
+    if (embeddedEmailValue.test(value) || containsPhone(value, path) || containsIpAddress(value)) {
       context.addIssue({
         code: "custom",
         message: "property appears to contain direct personal information and is not allowed",

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { buildPixelsMcpServer } from "./server.js";
+import packageJson from "../../package.json";
 
 async function withClient<T>(run: (client: Client) => Promise<T>): Promise<T> {
   const server = buildPixelsMcpServer();
@@ -28,6 +29,7 @@ describe("pixels MCP contract", () => {
       ]);
       expect(tools.tools.every((tool) => tool.inputSchema.type === "object")).toBeTrue();
       expect(tools.tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBeTrue();
+      expect(client.getServerVersion()?.version).toBe(packageJson.version);
 
       const resources = await client.listResources();
       expect(resources.resources.map((item) => item.uri)).toContain("pixels://providers");
