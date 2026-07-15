@@ -64,6 +64,9 @@ describe("evaluatePixelEvent", () => {
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { contact: "person@example.test" } } }))).toThrow();
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { contact: "send to person@example.test now" } } }))).toThrow();
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { contact: "+15551234567" } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { contact: 15551234567 } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { profile: { mobile: 15551234567 } } } }))).toThrow();
+    expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { profile: { telephone: 15551234567 } } } }))).toThrow();
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { contact: "call (555) 123-4567 today" } } }))).toThrow();
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { clientIp: "203.0.113.42" } } }))).toThrow();
     expect(() => evaluatePixelEvent(request({ event: { name: "lead", properties: { server: "203.0.113.42:443" } } }))).toThrow();
@@ -87,6 +90,10 @@ describe("evaluatePixelEvent", () => {
           compactDate: "20260715",
           releaseTrain: "2026.07.15",
           orderId: "order_12345678",
+          numericOrderId: 15551234567,
+          amount: 15551234567,
+          counter: 15551234567,
+          contactCount: 15551234567,
           network: { ipVersion: "IPv6", regions: ["north", "west"] },
         },
       },

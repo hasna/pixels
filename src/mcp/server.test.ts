@@ -27,6 +27,7 @@ describe("pixels MCP contract", () => {
         "pixels_validate_configuration",
       ]);
       expect(tools.tools.every((tool) => tool.inputSchema.type === "object")).toBeTrue();
+      expect(tools.tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBeTrue();
 
       const resources = await client.listResources();
       expect(resources.resources.map((item) => item.uri)).toContain("pixels://providers");

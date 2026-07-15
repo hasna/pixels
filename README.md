@@ -9,7 +9,7 @@ It is deliberately fail-closed:
 - analytics and advertising consent are evaluated separately;
 - Global Privacy Control and Do Not Track override consent by default;
 - Google Ads and LinkedIn conversions require explicit event mappings;
-- direct-PII-looking event property names and embedded email, phone, and IP values are rejected recursively;
+- direct-PII-looking event property names and embedded email, phone, and IP values are rejected recursively, including phone-like numbers under common contact fields;
 - only built-in providers with fixed script origins can dispatch;
 - the HTTP event route cannot dispatch unless both an authorizer and dispatcher are configured.
 
@@ -71,6 +71,8 @@ await client.track(
 
 Scripts are loaded only after the event passes policy, consent, privacy-signal, and schema checks. Revoking consent prevents future dispatch; it cannot undo data already sent or unload a third-party script, so applications should also reset/reload their page when their consent design requires that behavior.
 
+The browser SDK loads only the fixed origins returned by `listProviders()`. Production Content Security Policy must explicitly allow the selected providers' script, connection, and image endpoints. Deployments that require script nonces should integrate and approve provider loading in their own CSP-aware boundary. Treat provider load failures as observable delivery failures and retry only after confirming consent remains granted.
+
 ## Provider mappings
 
 Google Ads and LinkedIn accept only mapped conversion events:
@@ -103,6 +105,8 @@ const providers = [
 
 The standalone `pixels serve` command exposes the read/evaluate API only and keeps dispatch disabled. Bind defaults to `127.0.0.1`.
 
+An application that enables `/v1/events` owns the full authenticated-caller trust boundary: callers can select provider account identifiers, allowlists, and policy within the validated request. Constrain or replace those values with server-owned configuration before dispatch when callers must not control them.
+
 ## CLI
 
 ```bash
@@ -124,6 +128,8 @@ pixels-mcp --http          # Streamable HTTP at http://127.0.0.1:8892/mcp
 The HTTP transport also exposes `GET /health`.
 
 Streamable HTTP binds to loopback by default, rejects unapproved browser `Origin` headers, and permits local origins plus exact origins configured with repeatable `--allow-origin` flags. Library consumers may supply an `authorize` callback; non-loopback binding fails closed unless that callback is present. The CLI intentionally provides no non-loopback authentication backend, so `--host 0.0.0.0` is rejected.
+
+The exported raw `handlePixelsMcpHttpRequest()` does not infer whether an embedding server is remote. Remote embeddings must provide `authorize`, enforce request-body and rate limits at the server or reverse-proxy boundary, and retain the exact-origin policy. `startPixelsMcpHttpServer()` enforces the non-loopback authorization requirement for its own listener.
 
 ```ts
 import { startPixelsMcpHttpServer } from "@hasna/pixels/mcp/http";

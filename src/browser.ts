@@ -12,6 +12,14 @@ import type {
 
 type MutableGlobal = typeof globalThis & Record<string, unknown>;
 
+type MetaPixelQueue = ((...args: unknown[]) => unknown) & {
+  callMethod?: (...args: unknown[]) => unknown;
+  loaded: boolean;
+  push: MetaPixelQueue;
+  queue: unknown[][];
+  version: string;
+};
+
 type TikTokRuntime = Record<string, unknown> & {
   page?: () => unknown;
   track?: (name: string, properties?: Record<string, unknown>) => unknown;
@@ -103,9 +111,14 @@ function ensureGtag(global: MutableGlobal): (...args: unknown[]) => unknown {
 function ensureFbq(global: MutableGlobal): (...args: unknown[]) => unknown {
   const existing = asCallable(global["fbq"]);
   if (existing) return existing;
-  const queue: unknown[] = [];
-  const fbq = (...args: unknown[]) => queue.push(args);
-  Object.assign(fbq, { queue, loaded: true, version: "2.0" });
+  const fbq = function metaPixelQueue(...args: unknown[]): unknown {
+    const current = metaPixelQueue as MetaPixelQueue;
+    if (typeof current.callMethod === "function") {
+      return current.callMethod.apply(current, args);
+    }
+    return current.queue.push(args);
+  } as MetaPixelQueue;
+  Object.assign(fbq, { queue: [], loaded: true, version: "2.0", push: fbq });
   global["fbq"] = fbq;
   global["_fbq"] = fbq;
   return fbq;

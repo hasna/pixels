@@ -49,6 +49,23 @@ function blockedPropertyKey(key: string): boolean {
   return /(?:^|_)ip_address(?:_|$)/.test(normalized);
 }
 
+function numericPhonePropertyKey(key: string): boolean {
+  const tokens = propertyKeyTokens(key);
+  const normalized = tokens.join("_");
+  if (tokens.some((token) => ["phone", "mobile", "telephone", "tel", "cellphone"].includes(token))) {
+    return !tokens.some((token) => ["count", "id", "index", "rank", "total"].includes(token));
+  }
+  return ["contact", "contact_number", "contact_value"].includes(normalized);
+}
+
+function isNumericPhone(value: number, path: Array<string | number>): boolean {
+  if (!Number.isSafeInteger(value) || value < 0) return false;
+  const propertyKey = path.findLast((item): item is string => typeof item === "string");
+  if (!propertyKey || !numericPhonePropertyKey(propertyKey)) return false;
+  const digits = String(value);
+  return digits.length >= 8 && digits.length <= 15;
+}
+
 function containsPhone(value: string): boolean {
   const candidates = value.match(/\+?\d[\d\s().-]{6,}\d/g) ?? [];
   return candidates.some((candidate) => {
@@ -94,6 +111,14 @@ function inspectPropertyValue(
         path,
       });
     }
+    return;
+  }
+  if (typeof value === "number" && isNumericPhone(value, path)) {
+    context.addIssue({
+      code: "custom",
+      message: "numeric property appears to contain a direct phone number and is not allowed",
+      path,
+    });
     return;
   }
   if (Array.isArray(value)) {

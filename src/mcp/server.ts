@@ -34,7 +34,11 @@ export function buildPixelsMcpServer(): McpServer {
 
   server.registerTool(
     "pixels_providers",
-    { description: "List built-in allowlisted provider definitions.", inputSchema: z.object({}).strict() },
+    {
+      description: "List built-in allowlisted provider definitions.",
+      inputSchema: z.object({}).strict(),
+      annotations: { readOnlyHint: true },
+    },
     async () => result({ ok: true, providers: listProviders() }),
   );
 
@@ -43,6 +47,7 @@ export function buildPixelsMcpServer(): McpServer {
     {
       description: "Validate a consent policy and provider configuration without dispatching events.",
       inputSchema: configurationSchema,
+      annotations: { readOnlyHint: true },
     },
     async (input) => result({ ok: true, configuration: configurationSchema.parse(input) }),
   );
@@ -52,6 +57,7 @@ export function buildPixelsMcpServer(): McpServer {
     {
       description: "Evaluate consent, privacy signals, provider allowlists, and event mappings without dispatching an event.",
       inputSchema: evaluationRequestSchema,
+      annotations: { readOnlyHint: true },
     },
     async (input) => result({ ok: true, result: evaluatePixelEvent(evaluationRequestSchema.parse(input)) }),
   );

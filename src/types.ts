@@ -1,10 +1,10 @@
-export const PROVIDER_IDS = [
+export const PROVIDER_IDS = Object.freeze([
   "google-analytics",
   "google-ads",
   "meta",
   "tiktok",
   "linkedin",
-] as const;
+] as const);
 
 export type ProviderId = typeof PROVIDER_IDS[number];
 export type ConsentPurpose = "analytics" | "advertising";
@@ -133,5 +133,5 @@ export interface ProviderDefinition {
   id: ProviderId;
   purpose: ConsentPurpose;
   displayName: string;
-  scriptOrigins: string[];
+  scriptOrigins: readonly string[];
 }

@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { BrowserPixelClient, BrowserPixelDispatcher, readBrowserPrivacySignals } from "./browser.js";
 
-function fakeEnvironment(options: { failLoads?: number } = {}) {
+function fakeEnvironment(options: {
+  failLoads?: number;
+  onScriptLoad?: (globals: Record<string, unknown>, script: Record<string, unknown>) => void;
+} = {}) {
   const globals: Record<string, unknown> = {};
   const scripts: Array<Record<string, unknown>> = [];
   const images: Array<Record<string, unknown>> = [];
@@ -16,6 +19,7 @@ function fakeEnvironment(options: { failLoads?: number } = {}) {
           remainingFailures -= 1;
           listeners["error"]?.();
         } else {
+          options.onScriptLoad?.(globals, script);
           listeners["load"]?.();
         }
       },
@@ -68,6 +72,29 @@ describe("browser dispatcher", () => {
     expect(dataLayer.some((entry) => entry[0] === "event" && entry[1] === "page_view")).toBeTrue();
   });
 
+  test("dispatches Google Ads only through an explicit conversion mapping", async () => {
+    const { environment, globals, scripts } = fakeEnvironment();
+    const dispatcher = new BrowserPixelDispatcher(environment);
+    await dispatcher.dispatch(
+      {
+        provider: "google-ads",
+        enabled: true,
+        conversionId: "AW-123456",
+        conversionLabels: { newsletter_signup: "SignupLabel" },
+      },
+      { name: "newsletter_signup", eventId: "signup-1" },
+    );
+
+    const dataLayer = globals["dataLayer"] as unknown[][];
+    expect(dataLayer).toContainEqual([
+      "event",
+      "conversion",
+      { event_id: "signup-1", send_to: "AW-123456/SignupLabel" },
+    ]);
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0]?.["src"]).toBe("https://www.googletagmanager.com/gtag/js?id=AW-123456");
+  });
+
   test("generates LinkedIn conversion beacons only from mapped ids", async () => {
     const { environment, images } = fakeEnvironment();
     const dispatcher = new BrowserPixelDispatcher(environment);
@@ -77,6 +104,91 @@ describe("browser dispatcher", () => {
     );
     expect(images).toHaveLength(1);
     expect(String(images[0]?.["src"])).toStartWith("https://px.ads.linkedin.com/collect/");
+  });
+
+  test("does not bootstrap or load Meta before advertising consent", async () => {
+    const { environment, globals, scripts } = fakeEnvironment();
+    const client = new BrowserPixelClient({
+      environment,
+      policy: { enabled: true, allowedProviders: ["meta"] },
+      providers: [{ provider: "meta", enabled: true, pixelId: "123456789" }],
+    });
+
+    const result = await client.track({ name: "page_view" }, { analytics: false, advertising: false });
+
+    expect(result.dispatched).toEqual([]);
+    expect(scripts).toHaveLength(0);
+    expect(globals["fbq"]).toBeUndefined();
+    expect(globals["_fbq"]).toBeUndefined();
+  });
+
+  test("hands the official Meta queue to callMethod and dispatches later events", async () => {
+    const runtimeCalls: unknown[][] = [];
+    const { environment, globals, scripts } = fakeEnvironment({
+      onScriptLoad(currentGlobals) {
+        const fbq = currentGlobals["fbq"] as ((...args: unknown[]) => unknown) & {
+          callMethod?: (...args: unknown[]) => unknown;
+          queue: unknown[][];
+        };
+        const queued = [...fbq.queue];
+        fbq.callMethod = (...args: unknown[]) => runtimeCalls.push(args);
+        fbq.queue.length = 0;
+        for (const args of queued) fbq.callMethod(...args);
+      },
+    });
+    const dispatcher = new BrowserPixelDispatcher(environment);
+    const provider = { provider: "meta", enabled: true, pixelId: "123456789" } as const;
+
+    await dispatcher.dispatch(provider, { name: "page_view", eventId: "page-1" });
+    await dispatcher.dispatch(provider, {
+      name: "newsletter_signup",
+      eventId: "signup-1",
+      properties: { placement: "footer" },
+    });
+
+    const fbq = globals["fbq"] as ((...args: unknown[]) => unknown) & {
+      loaded: boolean;
+      push: unknown;
+      queue: unknown[][];
+      version: string;
+    };
+    expect(globals["_fbq"]).toBe(fbq);
+    expect(fbq.push).toBe(fbq);
+    expect(fbq.loaded).toBeTrue();
+    expect(fbq.version).toBe("2.0");
+    expect(fbq.queue).toEqual([]);
+    expect(runtimeCalls).toEqual([
+      ["init", provider.pixelId],
+      ["track", "PageView", {}, { eventID: "page-1" }],
+      ["trackCustom", "newsletter_signup", { placement: "footer" }, { eventID: "signup-1" }],
+    ]);
+    expect(scripts).toHaveLength(1);
+  });
+
+  test("retries a failed Meta load without duplicating initialization", async () => {
+    const runtimeCalls: unknown[][] = [];
+    const { environment, scripts } = fakeEnvironment({
+      failLoads: 1,
+      onScriptLoad(globals) {
+        const fbq = globals["fbq"] as ((...args: unknown[]) => unknown) & {
+          callMethod?: (...args: unknown[]) => unknown;
+          queue: unknown[][];
+        };
+        const queued = [...fbq.queue];
+        fbq.callMethod = (...args: unknown[]) => runtimeCalls.push(args);
+        fbq.queue.length = 0;
+        for (const args of queued) fbq.callMethod(...args);
+      },
+    });
+    const dispatcher = new BrowserPixelDispatcher(environment);
+    const provider = { provider: "meta", enabled: true, pixelId: "123456789" } as const;
+
+    await expect(dispatcher.dispatch(provider, { name: "page_view" })).rejects.toThrow("failed to load meta script");
+    await dispatcher.dispatch(provider, { name: "page_view" });
+
+    expect(runtimeCalls.filter((call) => call[0] === "init")).toHaveLength(1);
+    expect(runtimeCalls.filter((call) => call[0] === "track" && call[1] === "PageView")).toHaveLength(1);
+    expect(scripts).toHaveLength(1);
   });
 
   test("does not bootstrap or load TikTok before advertising consent", async () => {
