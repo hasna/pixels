@@ -743,7 +743,10 @@ describe("evaluatePixelEvent", () => {
     expect(falsePositiveKeys).toEqual([]);
   });
 
-  test("preserves a reviewer-scale hostile and safe semantic boundary corpus", () => {
+  describe("preserves a reviewer-scale hostile and safe semantic boundary corpus", () => {
+    const batchTimeoutMs = 30_000;
+    const hostileBatchSize = 40_000;
+    const safeBatchSize = 20_000;
     const renderers = [
       (tokens: string[]) => tokens.join(""),
       (tokens: string[]) => tokens.join("").toUpperCase(),
@@ -784,29 +787,6 @@ describe("evaluatePixelEvent", () => {
         }
       }
     }
-    const missedHostileKeys: string[] = [];
-    let hostileIndex = 0;
-    for (const key of hostileKeys) {
-      const leaf = { [key]: 15551234567 };
-      const shape = hostileIndex % 3 === 0
-        ? leaf
-        : hostileIndex % 3 === 1
-          ? { metadata: leaf }
-          : { records: [leaf] };
-      hostileIndex += 1;
-      try {
-        evaluatePixelEvent(request({
-          event: { name: "lead", properties: shape as EvaluationRequest["event"]["properties"] },
-        }));
-        if (missedHostileKeys.length < 20) missedHostileKeys.push(key);
-      } catch {
-        // Expected: the public schema rejects before any dispatch decision.
-      }
-    }
-    expect(hostileKeys.size).toBeGreaterThan(518_400);
-    expect(Math.max(...[...hostileKeys].map((key) => key.length))).toBeLessThanOrEqual(64);
-    expect(missedHostileKeys).toEqual([]);
-
     const modifiers = Array.from({ length: 96 }, (_, index) => `safex${index.toString(36)}q`);
     const safeEntities = [
       "app", "application", "code", "event", "product", "company", "organization",
@@ -883,23 +863,59 @@ describe("evaluatePixelEvent", () => {
       }
     }
 
-    const falsePositiveKeys: string[] = [];
-    for (const [key, value] of safeCases) {
-      try {
-        evaluatePixelEvent(request({
-          event: { name: "page_view", properties: { [key]: value } },
-        }));
-      } catch {
-        if (falsePositiveKeys.length < 20) falsePositiveKeys.push(key);
-      }
+    const hostileCorpus = [...hostileKeys];
+    const safeCorpus = [...safeCases];
+
+    test("retains the full bounded reviewer corpus", () => {
+      expect(hostileKeys.size).toBeGreaterThan(518_400);
+      expect(Math.max(...hostileCorpus.map((key) => key.length))).toBeLessThanOrEqual(64);
+      expect(safeCases.size).toBeGreaterThan(100_000);
+      expect(Math.max(...safeCorpus.map(([key]) => key.length))).toBeLessThanOrEqual(64);
+    });
+
+    for (let start = 0; start < hostileCorpus.length; start += hostileBatchSize) {
+      const end = Math.min(start + hostileBatchSize, hostileCorpus.length);
+      test(`rejects hostile boundary corpus cases ${start}-${end - 1}`, () => {
+        const missedHostileKeys: string[] = [];
+        for (let index = start; index < end; index += 1) {
+          const key = hostileCorpus[index]!;
+          const leaf = { [key]: 15551234567 };
+          const shape = index % 3 === 0
+            ? leaf
+            : index % 3 === 1
+              ? { metadata: leaf }
+              : { records: [leaf] };
+          try {
+            evaluatePixelEvent(request({
+              event: { name: "lead", properties: shape as EvaluationRequest["event"]["properties"] },
+            }));
+            if (missedHostileKeys.length < 20) missedHostileKeys.push(key);
+          } catch {
+            // Expected: the public schema rejects before any dispatch decision.
+          }
+        }
+        expect(missedHostileKeys).toEqual([]);
+      }, batchTimeoutMs);
     }
-    expect(safeCases.size).toBeGreaterThan(100_000);
-    expect(Math.max(...[...safeCases.keys()].map((key) => key.length))).toBeLessThanOrEqual(64);
-    expect(falsePositiveKeys).toEqual([]);
-  // This intentionally exercises more than 618,000 public-boundary parses.
-  // Shared CI runners are materially slower than development machines, so the
-  // timeout covers machine variance without reducing the adversarial corpus.
-  }, 180_000);
+
+    for (let start = 0; start < safeCorpus.length; start += safeBatchSize) {
+      const end = Math.min(start + safeBatchSize, safeCorpus.length);
+      test(`accepts safe boundary corpus cases ${start}-${end - 1}`, () => {
+        const falsePositiveKeys: string[] = [];
+        for (let index = start; index < end; index += 1) {
+          const [key, value] = safeCorpus[index]!;
+          try {
+            evaluatePixelEvent(request({
+              event: { name: "page_view", properties: { [key]: value } },
+            }));
+          } catch {
+            if (falsePositiveKeys.length < 20) falsePositiveKeys.push(key);
+          }
+        }
+        expect(falsePositiveKeys).toEqual([]);
+      }, batchTimeoutMs);
+    }
+  });
 
   test("keeps semantic decisions stable after bounded cache churn", () => {
     const classify = (key: string, value: PropertyValue): "accepted" | "rejected" => {
