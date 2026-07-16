@@ -1,0 +1,91 @@
+{
+  "name": "@hasna/pixels",
+  "version": "0.1.0",
+  "description": "Consent-aware provider pixel orchestration for browsers, APIs, CLIs, and MCP clients",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hasna/pixels.git"
+  },
+  "homepage": "https://github.com/hasna/pixels",
+  "bugs": {
+    "url": "https://github.com/hasna/pixels/issues"
+  },
+  "bin": {
+    "pixels": "dist/cli.js",
+    "pixels-mcp": "dist/mcp/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
+    },
+    "./api": {
+      "types": "./dist/api.d.ts",
+      "import": "./dist/api.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/server.d.ts",
+      "import": "./dist/mcp/server.js"
+    },
+    "./mcp/http": {
+      "types": "./dist/mcp/http.d.ts",
+      "import": "./dist/mcp/http.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "UNICODE-LICENSE.txt",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "generate:unicode-confusables": "bun run scripts/generate-unicode-confusables.ts",
+    "verify:unicode-confusables": "bun run scripts/generate-unicode-confusables.ts --check",
+    "build": "bun run clean && bun run build:js && bun run build:types",
+    "build:js": "bun build src/index.ts src/browser.ts src/api.ts src/cli.ts src/mcp/server.ts src/mcp/http.ts src/mcp/cli.ts --outdir dist --target bun --packages external --splitting",
+    "build:types": "tsc --emitDeclarationOnly --outDir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "check": "bun run verify:unicode-confusables && bun run typecheck && bun test && bun run build && bun run verify:release && bun run verify:browser-package",
+    "verify:release": "bun run scripts/verify-release.ts",
+    "verify:browser-package": "bun run scripts/verify-browser-package.ts",
+    "dev:cli": "bun run src/cli.ts",
+    "dev:mcp": "bun run src/mcp/cli.ts",
+    "prepack": "bun run check"
+  },
+  "keywords": [
+    "pixels",
+    "consent",
+    "privacy",
+    "analytics",
+    "advertising",
+    "mcp",
+    "bun"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "author": "Hasna Inc.",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "esbuild": "0.28.1",
+    "typescript": "^6.0.3"
+  }
+}

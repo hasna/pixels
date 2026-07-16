@@ -1,0 +1,241 @@
+import { describe, expect, test } from "bun:test";
+import { createPixelsHttpHandler } from "./api.js";
+
+const payload = {
+  event: { name: "page_view" },
+  consent: { analytics: true, advertising: false },
+  policy: { enabled: true, allowedProviders: ["google-analytics"] },
+  providers: [{ provider: "google-analytics", enabled: true, measurementId: "G-ABC12345" }],
+};
+
+function syntheticChunkedBody(totalBytes = 2 * 1024 * 1024, chunkBytes = 16 * 1024) {
+  let bytesProduced = 0;
+  let pulls = 0;
+  let cancellations = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1;
+      if (bytesProduced >= totalBytes) {
+        controller.close();
+        return;
+      }
+      const size = Math.min(chunkBytes, totalBytes - bytesProduced);
+      bytesProduced += size;
+      controller.enqueue(new Uint8Array(size));
+    },
+    cancel() {
+      cancellations += 1;
+    },
+  });
+  return {
+    stream,
+    stats: () => ({ bytesProduced, pulls, cancellations }),
+  };
+}
+
+describe("pixels API", () => {
+  test("reports fail-closed dispatch state", async () => {
+    const response = await createPixelsHttpHandler()(new Request("http://local/health"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, name: "pixels", dispatchConfigured: false });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  test("evaluates without dispatch", async () => {
+    const response = await createPixelsHttpHandler()(new Request("http://local/v1/evaluate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }));
+    expect(response.status).toBe(200);
+    const body = await response.json() as { result: { accepted: boolean } };
+    expect(body.result.accepted).toBeTrue();
+  });
+
+  test("keeps side-effecting event route disabled without dispatcher and auth", async () => {
+    const response = await createPixelsHttpHandler()(new Request("http://local/v1/events", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ ok: false, error: "dispatch_not_configured" });
+  });
+
+  test("requires authorization before configured dispatch", async () => {
+    let calls = 0;
+    const handler = createPixelsHttpHandler({
+      dispatcher: { dispatch: () => { calls += 1; } },
+      authorize: () => false,
+    });
+    const response = await handler(new Request("http://local/v1/events", { method: "POST", body: JSON.stringify(payload) }));
+    expect(response.status).toBe(401);
+    expect(calls).toBe(0);
+  });
+
+  test("fails closed when authorization fails", async () => {
+    const response = await createPixelsHttpHandler({
+      dispatcher: { dispatch: () => {} },
+      authorize: () => { throw new Error("auth backend detail"); },
+    })(new Request("http://local/v1/events", { method: "POST", body: JSON.stringify(payload) }));
+    expect(response.status).toBe(503);
+    expect(JSON.stringify(await response.json())).not.toContain("backend detail");
+  });
+
+  test("redacts dispatcher failures from API responses", async () => {
+    const response = await createPixelsHttpHandler({
+      dispatcher: { dispatch: () => { throw new Error("internal provider credential detail"); } },
+      authorize: () => true,
+    })(new Request("http://local/v1/events", { method: "POST", body: JSON.stringify(payload) }));
+    expect(response.status).toBe(207);
+    const serialized = JSON.stringify(await response.json());
+    expect(serialized).toContain("provider dispatch failed");
+    expect(serialized).not.toContain("credential detail");
+  });
+
+  test("rejects malformed JSON and oversized bodies", async () => {
+    const handler = createPixelsHttpHandler();
+    const malformed = await handler(new Request("http://local/v1/evaluate", { method: "POST", body: "{" }));
+    expect(malformed.status).toBe(400);
+    const oversized = await handler(new Request("http://local/v1/evaluate", {
+      method: "POST",
+      headers: { "content-length": "70000" },
+      body: "{}",
+    }));
+    expect(oversized.status).toBe(413);
+  });
+
+  test("stops chunked 2 MiB evaluate and event bodies at 64 KiB with zero dispatch", async () => {
+    const evaluateBody = syntheticChunkedBody();
+    const evaluateResponse = await createPixelsHttpHandler()(new Request("http://local/v1/evaluate", {
+      method: "POST",
+      body: evaluateBody.stream,
+    }));
+    expect(evaluateResponse.status).toBe(413);
+    expect(evaluateBody.stats().bytesProduced).toBeLessThan(2 * 1024 * 1024);
+    expect(evaluateBody.stats().pulls).toBeLessThanOrEqual(6);
+    expect(evaluateBody.stats().cancellations).toBe(1);
+
+    let dispatches = 0;
+    const eventBody = syntheticChunkedBody();
+    const eventResponse = await createPixelsHttpHandler({
+      authorize: () => true,
+      dispatcher: { dispatch() { dispatches += 1; } },
+    })(new Request("http://local/v1/events", {
+      method: "POST",
+      body: eventBody.stream,
+    }));
+    expect(eventResponse.status).toBe(413);
+    expect(eventBody.stats().bytesProduced).toBeLessThan(2 * 1024 * 1024);
+    expect(eventBody.stats().pulls).toBeLessThanOrEqual(6);
+    expect(eventBody.stats().cancellations).toBe(1);
+    expect(dispatches).toBe(0);
+  });
+
+  test("cancels declared overflow before pulling and times out a slow body", async () => {
+    const declaredBody = syntheticChunkedBody();
+    const declaredResponse = await createPixelsHttpHandler()(new Request("http://local/v1/evaluate", {
+      method: "POST",
+      headers: { "content-length": String(2 * 1024 * 1024) },
+      body: declaredBody.stream,
+    }));
+    expect(declaredResponse.status).toBe(413);
+    expect(declaredBody.stats()).toEqual({ bytesProduced: 0, pulls: 0, cancellations: 1 });
+
+    let slowCancellations = 0;
+    const slowBody = new ReadableStream<Uint8Array>({
+      pull() {
+        return new Promise<void>(() => {});
+      },
+      cancel() {
+        slowCancellations += 1;
+      },
+    });
+    const started = performance.now();
+    const slowResponse = await createPixelsHttpHandler({ bodyReadTimeoutMs: 20 })(
+      new Request("http://local/v1/evaluate", { method: "POST", body: slowBody }),
+    );
+    expect(slowResponse.status).toBe(408);
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(slowCancellations).toBe(1);
+  });
+
+  test("rejects compact PII before evaluation or authorized dispatch", async () => {
+    let dispatches = 0;
+    for (const properties of [
+      { billingcontactphone: 15551234567 },
+      { cellNumber: 15551234567 },
+      { cellularNumber: 15551234567 },
+      { personalName: "Ada Lovelace" },
+      { phóne: 15551234567 },
+      { ["phóne".normalize("NFD")]: 15551234567 },
+      { phοne: 15551234567 },
+      { clíent_ip: "synthetic" },
+      { profile: { pHONE: 15551234567 } },
+      { profile: { pҺØՆE: 15551234567 } },
+      { emAil: "synthetic@example.invalid" },
+      { aDdress: "synthetic" },
+      { sTreet: "synthetic" },
+      { postaL_code: "synthetic" },
+      { zIp: "synthetic" },
+      { cLient_ip: "synthetic" },
+      { pһone: 15551234567 },
+      { cӏient_ip: "synthetic" },
+      { poѕtal_code: "synthetic" },
+      { phoնe: 15551234567 },
+      { phøne: 15551234567 },
+    ]) {
+      const hostilePayload = {
+        ...payload,
+        event: { name: "lead", properties },
+      };
+      const evaluateResponse = await createPixelsHttpHandler()(new Request("http://local/v1/evaluate", {
+        method: "POST",
+        body: JSON.stringify(hostilePayload),
+      }));
+      expect(evaluateResponse.status).toBe(400);
+
+      const eventResponse = await createPixelsHttpHandler({
+        authorize: () => true,
+        dispatcher: { dispatch: () => { dispatches += 1; } },
+      })(new Request("http://local/v1/events", {
+        method: "POST",
+        body: JSON.stringify(hostilePayload),
+      }));
+      expect(eventResponse.status).toBe(400);
+    }
+    expect(dispatches).toBe(0);
+  });
+
+  test("accepts and dispatches safe non-person telecom entity metadata", async () => {
+    let dispatches = 0;
+    const safePayload = {
+      ...payload,
+      event: {
+        name: "page_view",
+        properties: {
+          safe0x_cellular_app: "Dialer product",
+          "région_du_réseau": "Europe",
+          "categoria_móvil": "actualités",
+          "équipe_cellulaire": "plateforme",
+          "cellular_οrganization": "Opérateur réseau",
+          "cellular_οRGANIZATION": "Opérateur réseau",
+          "сellular_app": "lector",
+        },
+      },
+    };
+    const evaluateResponse = await createPixelsHttpHandler()(new Request("http://local/v1/evaluate", {
+      method: "POST",
+      body: JSON.stringify(safePayload),
+    }));
+    expect(evaluateResponse.status).toBe(200);
+    const eventResponse = await createPixelsHttpHandler({
+      authorize: () => true,
+      dispatcher: { dispatch: () => { dispatches += 1; } },
+    })(new Request("http://local/v1/events", {
+      method: "POST",
+      body: JSON.stringify(safePayload),
+    }));
+    expect(eventResponse.status).toBe(202);
+    expect(dispatches).toBe(1);
+  });
+});
